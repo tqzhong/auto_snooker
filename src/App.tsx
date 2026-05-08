@@ -4,7 +4,7 @@
 // ============================================================
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import type { GameState, ShotParams, Vec2 } from './types';
+import type { GameState, ShotParams, Vec2, Ball } from './types';
 import { createInitialBalls } from './engine/physics';
 import { createInitialGameState, evaluateShot, applyShotResult } from './engine/rules';
 import { simulateShot, applyShot, angleBetween } from './engine/physics';
@@ -27,10 +27,55 @@ export default function App() {
   const [speed, setSpeed] = useState(1); // 1x, 2x, 4x
   const [shotInFlight, setShotInFlight] = useState(false);
   const [currentAim, setCurrentAim] = useState<{ from: Vec2; to: Vec2 } | undefined>();
+  const [animatedBalls, setAnimatedBalls] = useState<Ball[] | null>(null);
 
   const tickRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const animationRef = useRef<number | null>(null);
   const gameStateRef = useRef(gameState);
   gameStateRef.current = gameState;
+
+  // Animate through simulation frames using requestAnimationFrame
+  const animateFrames = useCallback((frames: Ball[][], animSpeed: number): Promise<void> => {
+    return new Promise((resolve) => {
+      if (frames.length === 0) {
+        resolve();
+        return;
+      }
+
+      // Frame interval: at 1x speed, show each frame for ~50ms; faster at higher speeds
+      const baseMsPerFrame = 50; // ms per animation frame at 1x
+      const msPerFrame = baseMsPerFrame / animSpeed;
+
+      let frameIndex = 0;
+      let lastFrameTime = 0;
+
+      const animate = (timestamp: number) => {
+        if (frameIndex >= frames.length) {
+          setAnimatedBalls(null);
+          if (animationRef.current) {
+            cancelAnimationFrame(animationRef.current);
+            animationRef.current = null;
+          }
+          resolve();
+          return;
+        }
+
+        if (timestamp - lastFrameTime >= msPerFrame) {
+          setAnimatedBalls(frames[frameIndex]);
+          frameIndex++;
+          lastFrameTime = timestamp;
+        }
+
+        animationRef.current = requestAnimationFrame(animate);
+      };
+
+      // Show first frame immediately, then start animation loop
+      setAnimatedBalls(frames[0]);
+      frameIndex = 1;
+      lastFrameTime = performance.now();
+      animationRef.current = requestAnimationFrame(animate);
+    });
+  }, []);
 
   // Auto-play: trigger AI decisions
   const triggerAIDecision = useCallback(async () => {
@@ -59,6 +104,9 @@ export default function App() {
       // Small delay to show the aim line
       await new Promise(r => setTimeout(r, 600));
 
+      // Clear aim line before animation starts
+      setCurrentAim(undefined);
+
       // Apply shot physics
       const ballsCopy = state.balls.map(b => ({
         ...b,
@@ -76,17 +124,21 @@ export default function App() {
         targetBallId: decision.targetBallId,
       };
 
-      // Simulate physics (all at once, not animated for simplicity)
+      // Simulate physics and get animation frames
       const simResult = simulateShot(ballsCopy);
-      const shotResult = evaluateShot(state, shotParams, simResult);
 
-      // Apply result to game state
+      // Animate through the frames
+      if (simResult.frames.length > 0) {
+        await animateFrames(simResult.frames, speed);
+      }
+
+      // After animation completes, evaluate shot result
+      const shotResult = evaluateShot(state, shotParams, simResult);
       const newState = applyShotResult(state, shotParams, simResult, shotResult, decision.reasoning);
       newState.simulating = false;
 
       setGameState(newState);
       setShotInFlight(false);
-      setCurrentAim(undefined);
 
       // If game continues and still playing, schedule next shot
       if (isPlaying && newState.phase !== 'game_over') {
@@ -96,13 +148,14 @@ export default function App() {
       }
     } catch (err) {
       console.error('AI decision error:', err);
+      setAnimatedBalls(null);
       setGameState(prev => ({
         ...prev,
         simulating: false,
         statusMessage: `AI决策出错: ${err instanceof Error ? err.message : '未知错误'}`,
       }));
     }
-  }, [isPlaying, speed]);
+  }, [isPlaying, speed, animateFrames]);
 
   // Start/stop auto-play
   const handlePlayPause = useCallback(() => {
@@ -137,6 +190,7 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (tickRef.current) clearTimeout(tickRef.current);
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
     };
   }, []);
 
@@ -214,7 +268,7 @@ export default function App() {
         {/* Center: Table */}
         <div style={styles.tableContainer}>
           <GameTable
-            balls={gameState.balls}
+            balls={animatedBalls ?? gameState.balls}
             aimLine={currentAim}
             playerName={gameState.players[gameState.currentPlayerIndex].name}
           />

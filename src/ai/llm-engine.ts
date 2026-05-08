@@ -5,7 +5,7 @@
 
 import type { GameState, LLMDecision, Ball, BallColor, Vec2, ShotRecord } from '../types';
 import { BALL_VALUES, COLORS_ORDER } from '../types';
-import { TABLE_WIDTH, TABLE_HEIGHT, BALL_RADIUS } from '../engine/constants';
+import { TABLE_LENGTH, TABLE_WIDTH, BALL_RADIUS } from '../engine/constants';
 import { describeBallPositions, distanceBetween, angleBetween } from '../engine/physics';
 
 // API config from environment
@@ -21,16 +21,15 @@ interface ChatMessage {
 function formatShotHistory(history: ShotRecord[], players: [string, string]): string {
   if (history.length === 0) return '暂无历史出杆记录';
 
-  const recent = history.slice(-5); // Last 5 shots for context
+  const recent = history.slice(-5);
   return recent.map((s, i) => {
     const player = players[s.playerIndex];
-    const target = s.shotParams.targetBallId;
     const result = s.result.pointsScored > 0
       ? `进球得${s.result.pointsScored}分`
       : s.result.fouls.length > 0
         ? `犯规: ${s.result.fouls.map(f => f.description).join(', ')}`
         : '未进球';
-    return `${i + 1}. ${player}: 目标球${target}, ${result}`;
+    return `${i + 1}. ${player}: 目标球#${s.shotParams.targetBallId}, ${result}`;
   }).join('\n');
 }
 
@@ -41,9 +40,9 @@ function formatBallState(balls: Ball[]): string {
   const cue = active.find(b => b.color === 'white');
 
   let desc = '';
-  desc += `红球(${reds.length}个): ${reds.map(b => `#${b.id}(${Math.round(b.pos.x)},${Math.round(b.pos.y)})`).join(', ')}`;
+  desc += `主球(白球): ${cue ? `(${Math.round(cue.pos.x)}, ${Math.round(cue.pos.y)})` : '已落袋'}`;
+  desc += `\n红球(${reds.length}个): ${reds.map(b => `#${b.id}(${Math.round(b.pos.x)},${Math.round(b.pos.y)})`).join(', ')}`;
   desc += `\n彩球: ${colors.map(b => `${b.color}#${b.id}(${Math.round(b.pos.x)},${Math.round(b.pos.y)})`).join(', ')}`;
-  desc += `\n主球: ${cue ? `(${Math.round(cue.pos.x)},${Math.round(cue.pos.y)})` : '已落袋'}`;
 
   return desc;
 }
@@ -53,14 +52,14 @@ function getPhaseDescription(state: GameState): string {
 
   switch (state.phase) {
     case 'break_off':
-      return '开球阶段: 必须先碰红球，尽量让主球安全回到底库';
+      return '开球阶段';
     case 'reds_phase':
       if (redsOnTable > 0) {
-        return `红球阶段: 还有${redsOnTable}个红球。可以进攻红球或彩球。进球红球后必须选择彩球。`;
+        return `红球阶段（剩余${redsOnTable}个红球）`;
       }
-      return '红球阶段: 红球即将打完，准备进入彩球阶段';
+      return '红球阶段即将结束';
     case 'colors_phase':
-      return `彩球阶段: 必须按顺序进球(${COLORS_ORDER.join('→')})。当前需要进球: ${state.nextColorToPot}`;
+      return `彩球阶段（需按顺序: 黄→绿→棕→蓝→粉→黑）当前需进球: ${state.nextColorToPot}`;
     case 'game_over':
       return '本局已结束';
     default:
@@ -76,51 +75,81 @@ function getStrategyHint(state: GameState, opponentScore: number): string {
     .reduce((sum, b) => sum + BALL_VALUES[b.color as BallColor], 0);
 
   if (scoreDiff > maxRemaining) {
-    return '你领先对手超过台面剩余分数，对手需要犯规才能追平。可以稳健出杆。';
+    return '你领先对手超过台面剩余分数，对手snooker才能追回。可以稳健出杆。';
   }
   if (scoreDiff < -maxRemaining) {
-    return '你落后较多，需要积极进攻争取连续得分。';
+    return '你落后很多，需要积极进攻争取连续得分。';
   }
   if (scoreDiff < 0) {
     return '你略微落后，需要进攻但也要注意防守质量。';
   }
   if (current.currentBreak > 20) {
-    return `当前单杆已得${current.currentBreak}分，保持节奏继续得分。`;
+    return `当前单杆已得${current.currentBreak}分，保持节奏。`;
   }
-  return '比分接近，根据台面球形选择最佳进攻或防守策略。';
-}
-
-function findSafestRed(ballPositions: string): { targetId: number; reason: string } {
-  // Parse ball positions to find a potable red
-  const reds = ballPositions.match(/red\((\d+),(\d+)\)/g) || [];
-  // Return first red as default
-  return { targetId: 0, reason: '无合适红球目标' };
+  return '比分接近，根据球形选择最佳策略。';
 }
 
 function buildSystemPrompt(): string {
-  return `你是一个专业的斯诺克AI教练，负责为球员制定出杆策略。
+  return `你是一个专业斯诺克AI教练。你必须严格遵守WPBSA官方斯诺克规则。
 
-你需要根据当前台面形势，决定出杆选择：
-- **进攻(attac)**: 直接尝试进球得分
-- **防守(safety)**: 将主球藏到安全位置，给对手制造困难
-- **斯诺克(snooker)**: 故意将主球藏在非目标球后面
+## 核心规则（你必须严格遵守）
 
-输出格式要求（严格JSON）：
+### 基本规则
+- 台面: 11ft 8½in × 5ft 10in (3569mm × 1778mm)
+- 22颗球: 1颗白球(主球), 15颗红球, 6颗彩球(黄/绿/棕/蓝/粉/黑)
+- **只有白球(主球)可以被球杆击打**。你永远只能击打白球，不能直接击打任何其他球。
+- 你的决策是：控制白球击打的方向、力量和旋转，让白球去撞击目标球。
+
+### 进攻规则
+- 红球阶段：必须先用白球碰红球。进球红球后，可以选择任意彩球进攻。
+- 彩球阶段：必须按顺序进球（黄→绿→棕→蓝→粉→黑），用白球先碰指定彩球。
+- 彩球进球后会被放回原位（红球阶段），直到所有红球打完。
+
+### 计分
+- 红球=1分, 黄=2, 绿=3, 棕=4, 蓝=5, 粉=6, 黑=7
+- 犯规罚分: 最少4分，最多7分（给对手加分）
+
+### 台面坐标
+- x轴=长轴: x=0是黑球端（顶袋端），x=3569是开球端（底袋端/baulk端）
+- y轴=短轴: y=0是左库边，y=1778是右库边
+- 白球只能从D区（baulk线附近）出发
+
+### 球位参考
+- 黑球点: (324, 889)
+- 粉球点: (892, 889)
+- 蓝球点: (1785, 889)
+- Baulk线: x=2832
+- 棕球点: (2832, 889) [baulk线中心]
+- 黄球点: (2832, 1181) [baulk线右侧]
+- 绿球点: (2832, 597) [baulk线左侧]
+
+## 输出格式（严格JSON，不要有任何多余文字）
+
 {
-  "targetBallId": 1,          // 目标球的ID
-  "aimAngle": 0.5,            // 瞄准角度(弧度，0=向右，π/2=向下)
-  "power": 0.6,               // 力度(0-1)
-  "spinX": 0.0,               // 横向旋转(-1到1，左旋到右旋)
-  "spinY": 0.0,               // 纵向旋转(-1到1，下旋到上旋)
-  "strategy": "attack",        // attack/safety/snooker
-  "reasoning": "简要说明理由"
+  "targetBallId": 目标球的id编号,
+  "aimAngle": 瞄准角度(弧度),
+  "power": 力度(0.1到1.0),
+  "spinX": 横向旋转(-1到1),
+  "spinY": 纵向旋转(-1到1),
+  "strategy": "attack"或"safety"或"snooker",
+  "reasoning": "简要理由(20字以内)"
 }
 
-注意：
-- 角度以弧度为单位，0表示向右，正数表示顺时针（向下）
-- 力度0.3-0.7适合普通进球，0.8+适合大力开球
-- 防守时可以力度较大但角度要精确
-- spin影响主球走位，left/right english让主球偏转
+角度说明:
+- 弧度制, 0=向右(+x方向), π/2=向下(+y方向), π=向左(-x方向), -π/2=向上(-y方向)
+- 白球向目标球的中心方向瞄准
+
+力度说明:
+- 0.2-0.4: 轻力（短距离进球、精准走位）
+- 0.4-0.6: 中力（标准进球）
+- 0.6-0.8: 中大力（长距离进球、开球）
+- 0.8-1.0: 大力（大力开球、强力防守）
+
+## 重要提醒
+1. targetBallId 必须是白球要撞击的目标球的ID编号（红球或彩球）
+2. aimAngle 是从白球位置指向目标球方向的角度
+3. 你永远只控制白球的运动方向和力量
+4. 选择目标球时要确保白球首先碰到的是规则允许的球
 `;
 }
 
@@ -133,64 +162,80 @@ function buildUserPrompt(state: GameState): string {
   const phaseDesc = getPhaseDescription(state);
   const strategyHint = getStrategyHint(state, opponent.score);
 
-  // Find available targets based on rules
   const availableTargets = getAvailableTargets(state);
 
-  return `当前局面分析：
-==================================
-你的名字: ${currentPlayer.name}
-你的得分: ${currentPlayer.score}
-对手(${opponent.name})得分: ${opponent.score}
-当前单杆: ${currentPlayer.currentBreak}
-==================================
+  // Calculate angle from cue ball to a sample target for LLM reference
+  const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
+  let angleHint = '';
+  if (cueBall && availableTargets.ballIds.length > 0) {
+    const firstTarget = state.balls.find(b => b.id === availableTargets.ballIds[0]);
+    if (firstTarget) {
+      const ang = angleBetween(cueBall.pos, firstTarget.pos);
+      angleHint = `\n参考: 白球到${firstTarget.color}球(#${firstTarget.id})的瞄准角度约为 ${ang.toFixed(2)} 弧度`;
+    }
+  }
 
-台面状态：
+  return `你是${currentPlayer.name}，当前轮到你出杆。
+
+== 得分 ==
+你: ${currentPlayer.score}分 (当前单杆: ${currentPlayer.currentBreak})
+对手${opponent.name}: ${opponent.score}分
+
+== 比赛阶段 ==
+${phaseDesc}
+
+== 台面球位 (坐标: x=长轴, y=短轴) ==
 ${ballState}
 
-比赛阶段: ${phaseDesc}
-当前应该进攻: ${availableTargets.description}
+== 合法目标 ==
+${availableTargets.description}
+可用目标球ID: [${availableTargets.ballIds.join(', ')}]
 
-历史出杆（最近5次）:
+== 策略建议 ==
+${strategyHint}
+
+== 历史出杆 ==
 ${shotHistory}
+${angleHint}
 
-策略建议: ${strategyHint}
-
-桌面尺寸: ${TABLE_WIDTH}mm x ${TABLE_HEIGHT}mm
-球半径: ${BALL_RADIUS}mm
-
-请根据以上信息，给出你的出杆决策（严格JSON格式，不要有多余文字）：`;
+请给出你的出杆决策（严格JSON，不要有任何其他文字）：`;
 }
 
-function getAvailableTargets(state: GameState): { description: string; colors: BallColor[] } {
-  const redsOnTable = state.balls.filter(b => b.color === 'red' && !b.pocketed).length;
+function getAvailableTargets(state: GameState): { description: string; ballIds: number[] } {
+  const redsOnTable = state.balls.filter(b => b.color === 'red' && !b.pocketed);
 
   if (state.phase === 'break_off' || state.phase === 'reds_phase') {
-    if (redsOnTable > 0) {
-      // Check if last shot potted a red
+    if (redsOnTable.length > 0) {
       const lastShot = state.shotHistory[state.shotHistory.length - 1];
       if (lastShot && lastShot.result.pottedBalls.some(b => b.color === 'red')) {
+        const colors = state.balls.filter(b => COLORS_ORDER.includes(b.color as BallColor) && !b.pocketed);
         return {
-          description: '进球红球后选择彩球（黄/绿/棕/蓝/粉/黑）',
-          colors: COLORS_ORDER,
+          description: '你刚进球红球，现在必须用白球先碰彩球（黄/绿/棕/蓝/粉/黑任选）',
+          ballIds: colors.map(b => b.id),
         };
       }
       return {
-        description: '进攻红球（也可以直接进攻彩球，但红球分值低且占据好位置）',
-        colors: ['red', ...COLORS_ORDER],
+        description: '红球阶段：用白球先碰红球（也可碰彩球但红球优先）',
+        ballIds: redsOnTable.map(b => b.id),
       };
     }
   }
 
-  if (state.phase === 'colors_phase') {
-    if (state.nextColorToPot) {
+  if (state.phase === 'colors_phase' && state.nextColorToPot) {
+    const target = state.balls.find(b => b.color === state.nextColorToPot && !b.pocketed);
+    if (target) {
       return {
-        description: `必须进攻${state.nextColorToPot}球`,
-        colors: [state.nextColorToPot],
+        description: `彩球阶段：必须用白球先碰${state.nextColorToPot}球`,
+        ballIds: [target.id],
       };
     }
   }
 
-  return { description: '红球', colors: ['red'] };
+  // Fallback: all reds
+  return {
+    description: '用白球碰红球',
+    ballIds: redsOnTable.map(b => b.id),
+  };
 }
 
 /** Call Xiaomi MiMo API for shot decision */
@@ -231,7 +276,7 @@ export async function getAIMoveDecision(state: GameState): Promise<LLMDecision> 
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || '';
 
-    // Parse JSON from response (handle potential markdown code blocks)
+    // Parse JSON from response (handle markdown code blocks)
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       console.error('Failed to parse LLM response as JSON:', content);
@@ -240,7 +285,7 @@ export async function getAIMoveDecision(state: GameState): Promise<LLMDecision> 
 
     const decision = JSON.parse(jsonMatch[0]) as LLMDecision;
 
-    // Validate
+    // Validate required fields
     if (typeof decision.targetBallId !== 'number' ||
         typeof decision.aimAngle !== 'number' ||
         typeof decision.power !== 'number') {
@@ -248,11 +293,24 @@ export async function getAIMoveDecision(state: GameState): Promise<LLMDecision> 
       return getFallbackDecision(state);
     }
 
-    // Clamp values
+    // Clamp values to valid ranges
     decision.power = Math.max(0.1, Math.min(1.0, decision.power));
     decision.spinX = Math.max(-1, Math.min(1, decision.spinX || 0));
     decision.spinY = Math.max(-1, Math.min(1, decision.spinY || 0));
-    decision.targetBallId = Math.max(0, decision.targetBallId);
+    decision.targetBallId = Math.max(0, Math.round(decision.targetBallId));
+
+    // Validate target ball exists and is on the table
+    const targetBall = state.balls.find(b => b.id === decision.targetBallId && !b.pocketed);
+    if (!targetBall) {
+      console.warn(`LLM chose non-existent/pocketed ball #${decision.targetBallId}, falling back`);
+      return getFallbackDecision(state);
+    }
+
+    // Ensure LLM didn't choose the cue ball as a target
+    if (targetBall.color === 'white') {
+      console.warn('LLM chose cue ball as target, falling back');
+      return getFallbackDecision(state);
+    }
 
     return decision;
   } catch (err) {
@@ -267,20 +325,20 @@ export function getFallbackDecision(state: GameState): LLMDecision {
   if (!cueBall) {
     return {
       targetBallId: 0, aimAngle: 0, power: 0.5, spinX: 0, spinY: 0,
-      strategy: 'attack', reasoning: '无主球，无法出杆',
+      strategy: 'attack', reasoning: '无主球',
     };
   }
 
   const available = getAvailableTargets(state);
   const targets = state.balls.filter(b =>
-    available.colors.includes(b.color as BallColor) && !b.pocketed
+    available.ballIds.includes(b.id) && !b.pocketed
   );
 
   if (targets.length === 0) {
-    // No legal target, just hit forward
+    // No legal target — safety shot toward top cushion
     return {
-      targetBallId: 0, aimAngle: -Math.PI / 2, power: 0.3, spinX: 0, spinY: 0,
-      strategy: 'safety', reasoning: '没有合法目标，安全出杆',
+      targetBallId: 0, aimAngle: 0, power: 0.4, spinX: 0, spinY: 0,
+      strategy: 'safety', reasoning: '无合法目标，防守',
     };
   }
 
@@ -296,35 +354,33 @@ export function getFallbackDecision(state: GameState): LLMDecision {
   }
 
   const angle = angleBetween(cueBall.pos, bestTarget.pos);
-
-  // Check if near pocket for pot chance
   const nearPocket = isNearPocket(bestTarget);
-  const power = nearPocket ? 0.4 : 0.55;
+  const power = nearPocket ? 0.35 : 0.5;
 
   return {
     targetBallId: bestTarget.id,
     aimAngle: angle,
     power,
     spinX: 0,
-    spinY: -0.1, // Slight backspin for position
+    spinY: -0.1,
     strategy: nearPocket ? 'attack' : 'safety',
     reasoning: nearPocket
-      ? `${bestTarget.color}球在袋口附近，选择进攻`
-      : `${bestTarget.color}球是最佳目标，稳健出杆`,
+      ? `${bestTarget.color}在袋口，进攻`
+      : `${bestTarget.color}最近，出杆`,
   };
 }
 
 function isNearPocket(ball: Ball): boolean {
   const pockets: [number, number][] = [
-    [54, 54], [TABLE_WIDTH / 2, 0], [TABLE_WIDTH - 54, 54],
-    [54, TABLE_HEIGHT - 54], [TABLE_WIDTH / 2, TABLE_HEIGHT], [TABLE_WIDTH - 54, TABLE_HEIGHT - 54],
+    [54, 54], [0, TABLE_WIDTH / 2], [54, TABLE_WIDTH - 54],
+    [TABLE_LENGTH - 54, 54], [TABLE_LENGTH, TABLE_WIDTH / 2], [TABLE_LENGTH - 54, TABLE_WIDTH - 54],
   ];
 
   for (const [px, py] of pockets) {
     const dx = ball.pos.x - px;
     const dy = ball.pos.y - py;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < 200) return true; // Within 200mm of pocket
+    if (dist < 200) return true;
   }
   return false;
 }

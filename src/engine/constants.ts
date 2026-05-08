@@ -1,69 +1,100 @@
 // ============================================================
 // Snooker Table Constants (all values in mm)
-// Based on World Snooker / IBSF regulations
+// Based on WPBSA Official Rules 2024-25
+//
+// COORDINATE SYSTEM (rotated 90° CW from standard portrait):
+//   x-axis = LONG axis (12ft 8½in = 3569mm), left to right
+//   y-axis = SHORT axis (5ft 10in = 1778mm), top to bottom
+//
+//   x=0 = Top cushion (black ball end)
+//   x=3569 = Bottom / Baulk cushion
+//   y=0 = Left side cushion
+//   y=1778 = Right side cushion
+//
+// Canvas renders landscape: width maps to x, height maps to y
 // ============================================================
 
-/** Full-size table: 12ft x 6ft (play area) */
-export const TABLE_WIDTH = 3569;
-export const TABLE_HEIGHT = 1778;
+/** Full-size table: 11ft 8½in x 5ft 10in (play area) */
+export const TABLE_LENGTH = 3569; // long axis (x)
+export const TABLE_WIDTH = 1778;  // short axis (y)
+
+// Backward-compat alias for renderer
+export const TABLE_HEIGHT = TABLE_WIDTH;
 
 /** Ball radius: 26.25mm (52.5mm diameter) */
 export const BALL_RADIUS = 26.25;
 
-/** Pocket opening radius: ~54mm (corner), ~60mm (middle of top/bottom) */
+/** Pocket opening radius: ~54mm (corner), ~60mm (middle of long cushions) */
 export const CORNER_POCKET_RADIUS = 54;
 export const MIDDLE_POCKET_RADIUS = 60;
 
 /** Cushion width for rendering (visual only) */
 export const CUSHION_WIDTH = 40;
 
-/** Rail baulk line distance from bottom cushion: 737mm (29 inches) */
-export const BAULK_LINE_Y = TABLE_HEIGHT - 737;
+// ============================================================
+// SPOT POSITIONS — per WPBSA rules Section 1(f)
+//
+// All spots lie on the centre longitudinal line (y = CENTER_Y).
+// Distances measured from the face of the Top Cushion (x=0).
+//
+// Black Spot:  12¾ in (324 mm) from Top Cushion
+// Pink Spot:   midway between Blue Spot and Top Cushion face
+//              = (1784.5 + 0) / 2 = 892.25 mm
+// Blue Spot:   midway between Top and Bottom Cushions
+//              = 3569 / 2 = 1784.5 mm
+// Brown Spot:  middle of the Baulk-line
+//              = 3569 - 737 = 2832 mm
+// Yellow Spot: right corner of D (viewed from Baulk end)
+//              = on Baulk-line, y = CENTER_Y + 292
+// Green Spot:  left corner of D (viewed from Baulk end)
+//              = on Baulk-line, y = CENTER_Y - 292
+// ============================================================
 
-/** D-zone radius: 292mm (11.5 inches) from baulk line center */
+export const BLACK_SPOT_X = 324;
+export const PINK_SPOT_X = 892.25; // midway between blue (1784.5) and top (0)
+export const BLUE_SPOT_X = TABLE_LENGTH / 2; // 1784.5
+
+/** Baulk line: 737mm (29 in) from the Baulk Cushion */
+export const BAULK_LINE_X = TABLE_LENGTH - 737; // 2832
+
+/** Centre of the short axis */
+export const CENTER_Y = TABLE_WIDTH / 2; // 889
+
+/** D-zone radius: 292mm (11½ in) */
 export const D_ZONE_RADIUS = 292;
 
-/** Center of baulk line (D-zone center) */
-export const BAULK_CENTER_X = TABLE_WIDTH / 2;
+/** Named spot positions as [x, y] */
+export const BLACK_SPOT: [number, number] = [BLACK_SPOT_X, CENTER_Y];
+export const PINK_SPOT: [number, number] = [PINK_SPOT_X, CENTER_Y];
+export const BLUE_SPOT: [number, number] = [BLUE_SPOT_X, CENTER_Y];
+export const BROWN_SPOT: [number, number] = [BAULK_LINE_X, CENTER_Y];
+export const YELLOW_SPOT: [number, number] = [BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS];
+export const GREEN_SPOT: [number, number] = [BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS];
 
-/** Blue spot: center of table */
-export const BLUE_SPOT: [number, number] = [TABLE_WIDTH / 2, TABLE_HEIGHT / 2];
+/** Cue ball break-off: inside D-zone, slightly right of center (viewed from baulk) */
+export const CUE_BALL_BREAK_POS: [number, number] = [BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS * 0.4];
 
-/** Pink spot: 1270mm from top cushion */
-export const PINK_SPOT: [number, number] = [TABLE_WIDTH / 2, 1270];
+// ============================================================
+// POCKETS — 6 pockets
+//   Corners at x≈0 or x≈TABLE_LENGTH, y≈0 or y≈TABLE_WIDTH
+//   Middles at x=0 or x=TABLE_LENGTH, y=CENTER_Y
+// ============================================================
 
-/** Black spot: 324mm from top cushion */
-export const BLACK_SPOT: [number, number] = [TABLE_WIDTH / 2, 324];
-
-/** Brown spot: on baulk line, center */
-export const BROWN_SPOT: [number, number] = [BAULK_CENTER_X, BAULK_LINE_Y];
-
-/** Yellow spot: on baulk line, right quarter */
-export const YELLOW_SPOT: [number, number] = [BAULK_CENTER_X + D_ZONE_RADIUS, BAULK_LINE_Y];
-
-/** Green spot: on baulk line, left quarter */
-export const GREEN_SPOT: [number, number] = [BAULK_CENTER_X - D_ZONE_RADIUS, BAULK_LINE_Y];
-
-/** Resting position for cue ball on break-off: on baulk line in D-zone */
-export const CUE_BALL_BREAK_POS: [number, number] = [BAULK_CENTER_X + D_ZONE_RADIUS * 0.4, BAULK_LINE_Y];
-
-/** Pocket positions (6 pockets) */
 export const POCKET_POSITIONS: [number, number][] = [
-  // Top-left corner
+  // Top-left corner (Top cushion + Left cushion)
   [CORNER_POCKET_RADIUS * 0.4, CORNER_POCKET_RADIUS * 0.4],
-  // Top-middle
-  [TABLE_WIDTH / 2, 0],
-  // Top-right corner
-  [TABLE_WIDTH - CORNER_POCKET_RADIUS * 0.4, CORNER_POCKET_RADIUS * 0.4],
-  // Bottom-left corner
-  [CORNER_POCKET_RADIUS * 0.4, TABLE_HEIGHT - CORNER_POCKET_RADIUS * 0.4],
-  // Bottom-middle
-  [TABLE_WIDTH / 2, TABLE_HEIGHT],
-  // Bottom-right corner
-  [TABLE_WIDTH - CORNER_POCKET_RADIUS * 0.4, TABLE_HEIGHT - CORNER_POCKET_RADIUS * 0.4],
+  // Top-middle (centre of Top cushion)
+  [0, CENTER_Y],
+  // Top-right corner (Top cushion + Right cushion)
+  [CORNER_POCKET_RADIUS * 0.4, TABLE_WIDTH - CORNER_POCKET_RADIUS * 0.4],
+  // Bottom-left corner (Baulk cushion + Left cushion)
+  [TABLE_LENGTH - CORNER_POCKET_RADIUS * 0.4, CORNER_POCKET_RADIUS * 0.4],
+  // Bottom-middle (centre of Baulk cushion)
+  [TABLE_LENGTH, CENTER_Y],
+  // Bottom-right corner (Baulk cushion + Right cushion)
+  [TABLE_LENGTH - CORNER_POCKET_RADIUS * 0.4, TABLE_WIDTH - CORNER_POCKET_RADIUS * 0.4],
 ];
 
-/** Pocket radii (corners are slightly smaller than middles) */
 export const POCKET_RADII: number[] = [
   CORNER_POCKET_RADIUS,
   MIDDLE_POCKET_RADIUS,
@@ -74,16 +105,16 @@ export const POCKET_RADII: number[] = [
 ];
 
 /** Physics constants */
-export const FRICTION_DECELERATION = 450; // mm/s^2 - rolling friction on baize
-export const CUSHION_RESTITUTION = 0.75; // Coefficient of restitution for cushion bounce
-export const BALL_RESTITUTION = 0.95; // Coefficient of restitution for ball-ball collision
-export const SPIN_FRICTION_FACTOR = 0.3; // How much spin affects trajectory after contact
-export const MAX_CUE_SPEED = 5000; // mm/s at maximum power
-export const POCKET_PULL_RADIUS_FACTOR = 1.6; // Pocket "sucks in" ball if within this factor of pocket radius
+export const FRICTION_DECELERATION = 450; // mm/s^2
+export const CUSHION_RESTITUTION = 0.75;
+export const BALL_RESTITUTION = 0.95;
+export const SPIN_FRICTION_FACTOR = 0.3;
+export const MAX_CUE_SPEED = 5000; // mm/s
+export const POCKET_PULL_RADIUS_FACTOR = 1.6;
 
 /** Simulation */
-export const PHYSICS_TIMESTEP = 1 / 240; // seconds per physics step
-export const MAX_SIMULATION_TIME = 30; // seconds - stop if balls haven't settled
+export const PHYSICS_TIMESTEP = 1 / 240; // seconds
+export const MAX_SIMULATION_TIME = 30; // seconds
 
 /** Scoring */
 export const MIN_FOUL = 4;

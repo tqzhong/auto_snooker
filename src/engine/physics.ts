@@ -6,21 +6,15 @@
 import type { Ball, Vec2 } from '../types';
 import {
   BALL_RADIUS, BALL_RESTITUTION, CUSHION_RESTITUTION,
-  FRICTION_DECELERATION, MAX_CUE_SPEED, TABLE_WIDTH, TABLE_HEIGHT,
-  POCKET_POSITIONS, POCKET_RADII, POCKET_PULL_RADIUS_FACTOR,
+  FRICTION_DECELERATION, MAX_CUE_SPEED,
+  TABLE_LENGTH, TABLE_WIDTH,
+  POCKET_POSITIONS, POCKET_RADII,
   PHYSICS_TIMESTEP, MAX_SIMULATION_TIME,
+  PINK_SPOT_X, BAULK_LINE_X, CENTER_Y, D_ZONE_RADIUS,
 } from './constants';
 
 function vec2(x: number, y: number): Vec2 { return { x, y }; }
-function vecAdd(a: Vec2, b: Vec2): Vec2 { return { x: a.x + b.x, y: a.y + b.y }; }
-function vecSub(a: Vec2, b: Vec2): Vec2 { return { x: a.x - b.x, y: a.y - b.y }; }
-function vecScale(v: Vec2, s: number): Vec2 { return { x: v.x * s, y: v.y * s }; }
 function vecLen(v: Vec2): number { return Math.sqrt(v.x * v.x + v.y * v.y); }
-function vecDot(a: Vec2, b: Vec2): number { return a.x * b.x + a.y * b.y; }
-function vecNorm(v: Vec2): Vec2 {
-  const l = vecLen(v);
-  return l > 0 ? { x: v.x / l, y: v.y / l } : { x: 0, y: 0 };
-}
 
 /** Check if a ball has fallen into any pocket */
 function checkPocket(ball: Ball): boolean {
@@ -30,12 +24,8 @@ function checkPocket(ball: Ball): boolean {
     const dx = ball.pos.x - pocketPos.x;
     const dy = ball.pos.y - pocketPos.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    // Ball center must be within pocket opening
-    if (dist < pocketRadius * POCKET_PULL_RADIUS_FACTOR) {
-      // Closer to pocket center = stronger pull
-      if (dist < pocketRadius) {
-        return true;
-      }
+    if (dist < pocketRadius) {
+      return true;
     }
   }
   return false;
@@ -50,30 +40,22 @@ function resolveBallCollision(a: Ball, b: Ball): void {
 
   if (dist >= minDist || dist === 0) return;
 
-  // Normal vector from a to b
   const nx = dx / dist;
   const ny = dy / dist;
 
-  // Relative velocity
   const dvx = a.vel.x - b.vel.x;
   const dvy = a.vel.y - b.vel.y;
-
-  // Relative velocity along normal
   const dvn = dvx * nx + dvy * ny;
 
-  // Don't resolve if balls are separating
   if (dvn <= 0) return;
 
-  // Impulse (equal mass, so simplified)
   const impulse = dvn * BALL_RESTITUTION;
 
-  // Update velocities
   a.vel.x -= impulse * nx;
   a.vel.y -= impulse * ny;
   b.vel.x += impulse * nx;
   b.vel.y += impulse * ny;
 
-  // Separate overlapping balls
   const overlap = minDist - dist;
   a.pos.x -= (overlap / 2) * nx;
   a.pos.y -= (overlap / 2) * ny;
@@ -85,25 +67,25 @@ function resolveBallCollision(a: Ball, b: Ball): void {
 function handleCushionBounce(ball: Ball): void {
   const r = ball.radius;
 
-  // Left cushion
-  if (ball.pos.x - r < 0) {
-    ball.pos.x = r;
-    ball.vel.x = Math.abs(ball.vel.x) * CUSHION_RESTITUTION;
-  }
-  // Right cushion
-  if (ball.pos.x + r > TABLE_WIDTH) {
-    ball.pos.x = TABLE_WIDTH - r;
-    ball.vel.x = -Math.abs(ball.vel.x) * CUSHION_RESTITUTION;
-  }
-  // Top cushion
+  // Left cushion (y=0)
   if (ball.pos.y - r < 0) {
     ball.pos.y = r;
     ball.vel.y = Math.abs(ball.vel.y) * CUSHION_RESTITUTION;
   }
-  // Bottom cushion
-  if (ball.pos.y + r > TABLE_HEIGHT) {
-    ball.pos.y = TABLE_HEIGHT - r;
+  // Right cushion (y=TABLE_WIDTH)
+  if (ball.pos.y + r > TABLE_WIDTH) {
+    ball.pos.y = TABLE_WIDTH - r;
     ball.vel.y = -Math.abs(ball.vel.y) * CUSHION_RESTITUTION;
+  }
+  // Top cushion (x=0)
+  if (ball.pos.x - r < 0) {
+    ball.pos.x = r;
+    ball.vel.x = Math.abs(ball.vel.x) * CUSHION_RESTITUTION;
+  }
+  // Bottom / Baulk cushion (x=TABLE_LENGTH)
+  if (ball.pos.x + r > TABLE_LENGTH) {
+    ball.pos.x = TABLE_LENGTH - r;
+    ball.vel.x = -Math.abs(ball.vel.x) * CUSHION_RESTITUTION;
   }
 }
 
@@ -131,28 +113,33 @@ export function createInitialBalls(): Ball[] {
   const balls: Ball[] = [];
   let id = 0;
 
-  // Cue ball
-  const breakPos = vec2(BAULK_CENTER_X + 120, TABLE_HEIGHT - 737);
+  // Cue ball: in D-zone on baulk line
   balls.push({
     id: id++,
     color: 'white',
-    pos: breakPos,
+    pos: vec2(BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS * 0.4),
     vel: vec2(0, 0),
     radius: BALL_RADIUS,
     pocketed: false,
     active: true,
   });
 
-  // 15 reds in triangle formation near the pink spot
-  const pinkY = 1270;
-  const startX = TABLE_WIDTH / 2;
+  // 15 reds in triangle formation
+  // WPBSA rules: triangle placed with apex CLOSEST to the pink ball.
+  // The pink is at x=892.25. The apex (row 0, 1 ball) sits just beyond
+  // the pink toward the top cushion (decreasing x), with the base
+  // (row 4, 5 balls) opening toward the baulk end (increasing x).
+  //
+  // Actually per the standard diagram: apex touches the pink.
+  // So apex x = PINK_SPOT_X - BALL_RADIUS * 2 (just above pink)
+  const apexX = PINK_SPOT_X - BALL_RADIUS * 2;
   const rowSpacing = BALL_RADIUS * 2 * 0.866; // sqrt(3)/2 for hex packing
   const colSpacing = BALL_RADIUS * 2;
-  let redIndex = 0;
+
   for (let row = 0; row < 5; row++) {
     for (let col = 0; col <= row; col++) {
-      const x = startX + (col - row / 2) * colSpacing;
-      const y = pinkY - (row + 1) * rowSpacing;
+      const x = apexX - row * rowSpacing; // rows go toward top cushion (decreasing x)
+      const y = CENTER_Y + (col - row / 2) * colSpacing;
       balls.push({
         id: id++,
         color: 'red',
@@ -162,18 +149,17 @@ export function createInitialBalls(): Ball[] {
         pocketed: false,
         active: true,
       });
-      redIndex++;
     }
   }
 
-  // Color balls on their spots
+  // Color balls on their designated spots
   const colorSpots: [string, number, number][] = [
-    ['yellow', TABLE_WIDTH / 2 + 292, TABLE_HEIGHT - 737],
-    ['green', TABLE_WIDTH / 2 - 292, TABLE_HEIGHT - 737],
-    ['brown', TABLE_WIDTH / 2, TABLE_HEIGHT - 737],
-    ['blue', TABLE_WIDTH / 2, TABLE_HEIGHT / 2],
-    ['pink', TABLE_WIDTH / 2, 1270],
-    ['black', TABLE_WIDTH / 2, 324],
+    ['yellow', BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS],
+    ['green', BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS],
+    ['brown', BAULK_LINE_X, CENTER_Y],
+    ['blue', TABLE_LENGTH / 2, CENTER_Y],
+    ['pink', PINK_SPOT_X, CENTER_Y],
+    ['black', 324, CENTER_Y],
   ];
 
   for (const [color, x, y] of colorSpots) {
@@ -190,9 +176,6 @@ export function createInitialBalls(): Ball[] {
 
   return balls;
 }
-
-// Re-export baulk center for use elsewhere
-const BAULK_CENTER_X = TABLE_WIDTH / 2;
 
 /** Apply shot: set cue ball velocity based on shot parameters */
 export function applyShot(
@@ -211,24 +194,18 @@ export function applyShot(
     Math.sin(angle) * speed,
   );
 
-  // Spin effects are subtle - modify velocity slightly after first contact
-  // We'll store spin on the ball temporarily
   (cueBall as any)._spinX = spinX;
   (cueBall as any)._spinY = spinY;
 }
 
 /** Physics simulation result */
 export interface SimulationResult {
-  /** Balls that were potted during this shot */
   pottedBalls: Ball[];
-  /** ID of the first ball the cue ball contacted */
   firstContactBallId: number | null;
-  /** Whether cue ball was potted */
   cueBallPotted: boolean;
-  /** Whether any ball hit a cushion after first contact */
   cushionHitAfterContact: boolean;
-  /** Final positions of all balls */
   finalBalls: Ball[];
+  frames: Ball[][];
 }
 
 /** Run full physics simulation until all balls stop */
@@ -238,8 +215,10 @@ export function simulateShot(balls: Ball[]): SimulationResult {
   let cueBallPotted = false;
   let cushionHitAfterContact = false;
   let hasContact = false;
+  const frames: Ball[][] = [];
+  const FRAME_INTERVAL_TICKS = Math.round(0.05 / PHYSICS_TIMESTEP);
+  let tickCount = 0;
 
-  // Deep copy balls for simulation
   const simBalls = balls.map(b => ({
     ...b,
     pos: { ...b.pos },
@@ -248,21 +227,19 @@ export function simulateShot(balls: Ball[]): SimulationResult {
 
   const cueBall = simBalls.find(b => b.color === 'white');
   if (!cueBall) {
-    return { pottedBalls: [], firstContactBallId: null, cueBallPotted: false, cushionHitAfterContact: false, finalBalls: simBalls };
+    return { pottedBalls: [], firstContactBallId: null, cueBallPotted: false, cushionHitAfterContact: false, finalBalls: simBalls, frames: [] };
   }
 
   const dt = PHYSICS_TIMESTEP;
   let elapsed = 0;
 
   while (!allBallsStopped(simBalls) && elapsed < MAX_SIMULATION_TIME) {
-    // Move balls
     for (const ball of simBalls) {
       if (ball.pocketed) continue;
       ball.pos.x += ball.vel.x * dt;
       ball.pos.y += ball.vel.y * dt;
     }
 
-    // Ball-ball collisions
     for (let i = 0; i < simBalls.length; i++) {
       if (simBalls[i].pocketed) continue;
       for (let j = i + 1; j < simBalls.length; j++) {
@@ -270,7 +247,6 @@ export function simulateShot(balls: Ball[]): SimulationResult {
         const beforeVel = { ...simBalls[i].vel };
         resolveBallCollision(simBalls[i], simBalls[j]);
 
-        // Track first contact
         const aIsCue = simBalls[i].color === 'white';
         const bIsCue = simBalls[j].color === 'white';
         if ((aIsCue || bIsCue) && !hasContact) {
@@ -285,7 +261,6 @@ export function simulateShot(balls: Ball[]): SimulationResult {
       }
     }
 
-    // Cushion bounces & track
     for (const ball of simBalls) {
       if (ball.pocketed) continue;
       const oldVel = { ...ball.vel };
@@ -296,7 +271,6 @@ export function simulateShot(balls: Ball[]): SimulationResult {
       }
     }
 
-    // Pocket detection
     for (const ball of simBalls) {
       if (ball.pocketed) continue;
       if (checkPocket(ball)) {
@@ -310,21 +284,34 @@ export function simulateShot(balls: Ball[]): SimulationResult {
       }
     }
 
-    // Apply friction
     for (const ball of simBalls) {
       if (ball.pocketed) continue;
       applyFriction(ball, dt);
     }
 
+    tickCount++;
+    if (tickCount % FRAME_INTERVAL_TICKS === 0) {
+      frames.push(simBalls.map(b => ({
+        ...b,
+        pos: { ...b.pos },
+        vel: { ...b.vel },
+      })));
+    }
+
     elapsed += dt;
   }
 
-  // Ensure all stopped
   for (const ball of simBalls) {
     if (!ball.pocketed) {
       ball.vel = vec2(0, 0);
     }
   }
+
+  frames.push(simBalls.map(b => ({
+    ...b,
+    pos: { ...b.pos },
+    vel: { ...b.vel },
+  })));
 
   return {
     pottedBalls,
@@ -332,12 +319,10 @@ export function simulateShot(balls: Ball[]): SimulationResult {
     cueBallPotted,
     cushionHitAfterContact,
     finalBalls: simBalls,
+    frames,
   };
 }
 
-// ============================================================
-// Utility: calculate angle from cue ball to a target position
-// ============================================================
 export function angleBetween(from: Vec2, to: Vec2): number {
   return Math.atan2(to.y - from.y, to.x - from.x);
 }
@@ -348,7 +333,6 @@ export function distanceBetween(a: Vec2, b: Vec2): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
-/** Get a human-readable description of ball positions for the LLM */
 export function describeBallPositions(balls: Ball[]): string {
   const active = balls.filter(b => !b.pocketed);
   return active.map(b => {

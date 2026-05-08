@@ -5,7 +5,7 @@
 
 import type { Ball, BallColor, GameState, GamePhase, Player, ShotParams, ShotResult, ShotRecord, Foul, FoulType } from '../types';
 import { BALL_VALUES, COLORS_ORDER, MIN_FOUL_POINTS, MAX_FOUL_POINTS } from '../types';
-import { TABLE_WIDTH, TABLE_HEIGHT } from './constants';
+import { TABLE_LENGTH, BAULK_LINE_X, CENTER_Y, D_ZONE_RADIUS } from './constants';
 import type { SimulationResult } from './physics';
 
 /** Maximum points remaining on the table (reds + colors) */
@@ -230,7 +230,7 @@ export function applyShotResult(
       const cueBall = newState.balls.find(b => b.color === 'white');
       if (cueBall) {
         cueBall.pocketed = false;
-        cueBall.pos = { x: TABLE_WIDTH / 2 + 120, y: TABLE_HEIGHT - 737 };
+        cueBall.pos = { x: BAULK_LINE_X, y: CENTER_Y + D_ZONE_RADIUS * 0.4 };
         cueBall.vel = { x: 0, y: 0 };
       }
     }
@@ -328,16 +328,18 @@ export function applyShotResult(
   return newState;
 }
 
-/** Get the designated spot position for a color ball */
+/** Get the designated spot position for a color ball (WPBSA rules) */
 function getColorSpot(color: BallColor): [number, number] {
+  const baulkX = TABLE_LENGTH - 737;
+  const centerY = 1778 / 2;
   switch (color) {
-    case 'yellow': return [TABLE_WIDTH / 2 + 292, TABLE_HEIGHT - 737];
-    case 'green': return [TABLE_WIDTH / 2 - 292, TABLE_HEIGHT - 737];
-    case 'brown': return [TABLE_WIDTH / 2, TABLE_HEIGHT - 737];
-    case 'blue': return [TABLE_WIDTH / 2, TABLE_HEIGHT / 2];
-    case 'pink': return [TABLE_WIDTH / 2, 1270];
-    case 'black': return [TABLE_WIDTH / 2, 324];
-    default: return [TABLE_WIDTH / 2, TABLE_HEIGHT / 2];
+    case 'yellow': return [baulkX, centerY + 292];
+    case 'green': return [baulkX, centerY - 292];
+    case 'brown': return [baulkX, centerY];
+    case 'blue': return [TABLE_LENGTH / 2, centerY];
+    case 'pink': return [892.25, centerY];
+    case 'black': return [324, centerY];
+    default: return [TABLE_LENGTH / 2, centerY];
   }
 }
 

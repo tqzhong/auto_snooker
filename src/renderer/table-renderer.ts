@@ -1,19 +1,20 @@
 // ============================================================
 // 2D Snooker Table Renderer (Canvas)
-// Top-down view with proper colors, markings, and ball rendering
+// Top-down view, landscape orientation
+// x-axis = long axis (left to right), y-axis = short axis (top to bottom)
+// x=0 is Top cushion (black ball end), x=3569 is Baulk cushion
 // ============================================================
 
-import type { Ball, BallColor, Vec2, ShotParams } from '../types';
+import type { Ball, BallColor, Vec2 } from '../types';
 import {
-  TABLE_WIDTH, TABLE_HEIGHT, BALL_RADIUS, CUSHION_WIDTH,
+  TABLE_LENGTH, TABLE_WIDTH, BALL_RADIUS, CUSHION_WIDTH,
   POCKET_POSITIONS, POCKET_RADII,
-  BAULK_LINE_Y, BAULK_CENTER_X, D_ZONE_RADIUS,
+  BAULK_LINE_X, CENTER_Y, D_ZONE_RADIUS,
 } from '../engine/constants';
 
-// Scale: pixels per mm. Table is ~3569mm wide, target ~900px canvas width
-const SCALE = 0.25;
+// Scale: pixels per mm. Target ~950px canvas width for the 3569mm table
+const SCALE = 0.26;
 
-// Ball colors for rendering
 const BALL_COLORS: Record<BallColor, string> = {
   white: '#FFFFFF',
   red: '#CC0000',
@@ -44,7 +45,7 @@ export interface RenderState {
   balls: Ball[];
   currentPlayerName: string;
   aimLine?: { from: Vec2; to: Vec2 };
-  powerIndicator?: number; // 0-1
+  powerIndicator?: number;
 }
 
 export class TableRenderer {
@@ -59,10 +60,9 @@ export class TableRenderer {
     if (!ctx) throw new Error('Cannot get 2D context');
     this.ctx = ctx;
 
-    // Set canvas size with padding for cushions
     const padding = CUSHION_WIDTH * SCALE * 2;
-    this.width = toPixel(TABLE_WIDTH) + padding * 2;
-    this.height = toPixel(TABLE_HEIGHT) + padding * 2;
+    this.width = toPixel(TABLE_LENGTH) + padding * 2;
+    this.height = toPixel(TABLE_WIDTH) + padding * 2;
 
     canvas.width = this.width;
     canvas.height = this.height;
@@ -74,26 +74,16 @@ export class TableRenderer {
 
     ctx.clearRect(0, 0, this.width, this.height);
 
-    // Draw outer frame (dark wood)
+    // Outer frame (dark wood)
     ctx.fillStyle = '#2A1506';
     ctx.fillRect(0, 0, this.width, this.height);
 
-    // Draw cushion area
+    // Cushion area
     this.drawCushions();
 
-    // Draw playing surface (green baize)
+    // Playing surface (green baize)
     ctx.fillStyle = '#0A6E3A';
-    ctx.fillRect(pad, pad, toPixel(TABLE_WIDTH), toPixel(TABLE_HEIGHT));
-
-    // Draw baize texture (subtle)
-    ctx.fillStyle = 'rgba(0,0,0,0.03)';
-    for (let i = 0; i < 50; i++) {
-      const x = pad + Math.random() * toPixel(TABLE_WIDTH);
-      const y = pad + Math.random() * toPixel(TABLE_HEIGHT);
-      ctx.beginPath();
-      ctx.arc(x, y, 1 + Math.random() * 2, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    ctx.fillRect(pad, pad, toPixel(TABLE_LENGTH), toPixel(TABLE_WIDTH));
 
     // Draw markings
     this.drawMarkings(pad);
@@ -101,80 +91,77 @@ export class TableRenderer {
     // Draw pockets
     this.drawPockets(pad);
 
-    // Draw aim line if present
+    // Aim line
     if (state.aimLine) {
       this.drawAimLine(state.aimLine, pad);
     }
 
-    // Draw balls
+    // Balls
     this.drawBalls(state.balls, pad);
   }
 
   private drawCushions(): void {
     const ctx = this.ctx;
-    const pad = CUSHION_WIDTH * SCALE;
     const cw = CUSHION_WIDTH * SCALE;
 
-    // Brown cushion color
     ctx.fillStyle = '#5C3317';
-
-    // Top cushion
-    ctx.fillRect(0, 0, this.width, cw);
-    // Bottom cushion
-    ctx.fillRect(0, this.height - cw, this.width, cw);
-    // Left cushion
+    // Top cushion (x=0 side)
     ctx.fillRect(0, 0, cw, this.height);
-    // Right cushion
+    // Bottom/baulk cushion (x=TABLE_LENGTH side)
     ctx.fillRect(this.width - cw, 0, cw, this.height);
+    // Left cushion (y=0 side)
+    ctx.fillRect(0, 0, this.width, cw);
+    // Right cushion (y=TABLE_WIDTH side)
+    ctx.fillRect(0, this.height - cw, this.width, cw);
 
-    // Inner edge highlight
+    // Inner edge
     ctx.strokeStyle = '#8B5E3C';
     ctx.lineWidth = 1;
-    ctx.strokeRect(cw, cw, toPixel(TABLE_WIDTH), toPixel(TABLE_HEIGHT));
+    ctx.strokeRect(cw, cw, toPixel(TABLE_LENGTH), toPixel(TABLE_WIDTH));
   }
 
   private drawMarkings(pad: number): void {
     const ctx = this.ctx;
 
-    // Baulk line
-    const baulkY = pad + toPixel(BAULK_LINE_Y);
+    // Baulk line (vertical line parallel to top cushion, 737mm from baulk end)
+    const baulkPx = pad + toPixel(BAULK_LINE_X);
     ctx.strokeStyle = 'rgba(255,255,255,0.4)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(pad, baulkY);
-    ctx.lineTo(pad + toPixel(TABLE_WIDTH), baulkY);
+    ctx.moveTo(baulkPx, pad);
+    ctx.lineTo(baulkPx, pad + toPixel(TABLE_WIDTH));
     ctx.stroke();
 
-    // D-zone (semi-circle on baulk line)
+    // D-zone (semi-circle on baulk line, opening toward top cushion)
+    const centerPx = pad + toPixel(CENTER_Y);
     ctx.strokeStyle = 'rgba(255,255,255,0.3)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.arc(pad + toPixel(BAULK_CENTER_X), baulkY, toPixel(D_ZONE_RADIUS), Math.PI, Math.PI * 2);
+    ctx.arc(baulkPx, centerPx, toPixel(D_ZONE_RADIUS), 0, Math.PI * 2);
     ctx.stroke();
 
-    // Center line (vertical through blue spot)
-    const centerX = pad + toPixel(TABLE_WIDTH / 2);
-    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+    // Centre line (horizontal through blue spot)
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(centerX, pad);
-    ctx.lineTo(centerX, pad + toPixel(TABLE_HEIGHT));
+    ctx.moveTo(pad, centerPx);
+    ctx.lineTo(pad + toPixel(TABLE_LENGTH), centerPx);
     ctx.stroke();
 
-    // Spot markers (small white dots)
+    // Spot markers
     const spots: [number, number][] = [
-      [TABLE_WIDTH / 2, TABLE_HEIGHT / 2],       // Blue
-      [TABLE_WIDTH / 2, 1270],                     // Pink
-      [TABLE_WIDTH / 2, 324],                      // Black
-      [BAULK_CENTER_X, BAULK_LINE_Y],              // Brown
-      [BAULK_CENTER_X + D_ZONE_RADIUS, BAULK_LINE_Y], // Yellow
-      [BAULK_CENTER_X - D_ZONE_RADIUS, BAULK_LINE_Y], // Green
+      [324, CENTER_Y],             // Black
+      [892.25, CENTER_Y],          // Pink
+      [TABLE_LENGTH / 2, CENTER_Y], // Blue
+      [BAULK_LINE_X, CENTER_Y],   // Brown
+      [BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS], // Yellow
+      [BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS], // Green
     ];
 
     for (const [x, y] of spots) {
       ctx.fillStyle = 'rgba(255,255,255,0.5)';
       ctx.beginPath();
-      ctx.arc(pad + toPixel(x), pad + toPixel(y), 2, 0, Math.PI * 2);
+      ctx.arc(pad + toPixel(x), pad + toPixel(y), 2.5, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -186,13 +173,11 @@ export class TableRenderer {
       const [px, py] = POCKET_POSITIONS[i];
       const radius = POCKET_RADII[i];
 
-      // Pocket hole (black circle)
       ctx.fillStyle = '#0A0A0A';
       ctx.beginPath();
       ctx.arc(pad + toPixel(px), pad + toPixel(py), toPixel(radius), 0, Math.PI * 2);
       ctx.fill();
 
-      // Pocket rim
       ctx.strokeStyle = '#2A1506';
       ctx.lineWidth = 2;
       ctx.stroke();
@@ -202,7 +187,6 @@ export class TableRenderer {
   private drawBalls(balls: Ball[], pad: number): void {
     const ctx = this.ctx;
 
-    // Sort: draw cue ball last (on top)
     const sorted = [...balls].filter(b => !b.pocketed).sort((a, b) => {
       if (a.color === 'white') return 1;
       if (b.color === 'white') return -1;
@@ -220,7 +204,7 @@ export class TableRenderer {
       ctx.arc(x + 2, y + 2, r, 0, Math.PI * 2);
       ctx.fill();
 
-      // Ball body
+      // Ball body gradient
       const gradient = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, r * 0.1, x, y, r);
       const color = BALL_COLORS[ball.color];
       gradient.addColorStop(0, lightenColor(color, 40));
@@ -232,7 +216,7 @@ export class TableRenderer {
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fill();
 
-      // Highlight (glass effect)
+      // Highlight
       ctx.fillStyle = 'rgba(255,255,255,0.35)';
       ctx.beginPath();
       ctx.arc(x - r * 0.25, y - r * 0.25, r * 0.35, 0, Math.PI * 2);
@@ -245,7 +229,7 @@ export class TableRenderer {
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.stroke();
 
-      // Number label for reds
+      // Number on reds
       if (ball.color === 'red') {
         ctx.fillStyle = '#FFFFFF';
         ctx.font = `bold ${Math.max(8, r * 0.8)}px Arial`;
@@ -254,7 +238,7 @@ export class TableRenderer {
         ctx.fillText(String(ball.id), x, y);
       }
 
-      // White dot for color balls (snooker standard)
+      // White dot on color balls
       if (ball.color !== 'red' && ball.color !== 'white') {
         ctx.fillStyle = '#FFFFFF';
         ctx.beginPath();
@@ -272,7 +256,6 @@ export class TableRenderer {
     const toX = pad + toPixel(line.to.x);
     const toY = pad + toPixel(line.to.y);
 
-    // Dashed aim line
     ctx.strokeStyle = 'rgba(255,255,255,0.6)';
     ctx.lineWidth = 1;
     ctx.setLineDash([6, 4]);
@@ -282,7 +265,6 @@ export class TableRenderer {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Target dot
     ctx.fillStyle = 'rgba(255,255,0,0.8)';
     ctx.beginPath();
     ctx.arc(toX, toY, 3, 0, Math.PI * 2);
@@ -290,7 +272,6 @@ export class TableRenderer {
   }
 }
 
-// Color utilities
 function lightenColor(hex: string, amount: number): string {
   const rgb = hexToRgb(hex);
   return `rgb(${Math.min(255, rgb.r + amount)}, ${Math.min(255, rgb.g + amount)}, ${Math.min(255, rgb.b + amount)})`;
