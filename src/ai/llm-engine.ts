@@ -180,24 +180,113 @@ function calculateBestShot(
 }
 
 /**
- * For safety shots: aim the cue ball to hit the target ball,
- * then send the cue ball to a safe position (far from the target).
+ * Check if a straight-line path from cue ball to target ball center
+ * is blocked by any other ball (within one ball radius of the line).
+ */
+function isPathBlocked(
+  cueBall: Ball,
+  targetBall: Ball,
+  allBalls: Ball[],
+): boolean {
+  const dx = targetBall.pos.x - cueBall.pos.x;
+  const dy = targetBall.pos.y - cueBall.pos.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist === 0) return false;
+
+  // Unit direction vector
+  const ux = dx / dist;
+  const uy = dy / dist;
+
+  for (const ball of allBalls) {
+    if (ball.pocketed) continue;
+    if (ball.id === cueBall.id || ball.id === targetBall.id) continue;
+
+    // Vector from cue ball to this ball
+    const bx = ball.pos.x - cueBall.pos.x;
+    const by = ball.pos.y - cueBall.pos.y;
+
+    // Project onto the line direction
+    const projection = bx * ux + by * uy;
+
+    // Only consider balls between cue and target
+    if (projection <= 0 || projection >= dist) continue;
+
+    // Perpendicular distance from the line
+    const perpDist = Math.abs(bx * (-uy) + by * ux);
+
+    // If the ball is within 2 ball radii of the line, it's a blocker
+    if (perpDist < BALL_RADIUS * 2) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Find a valid angle to hit the target ball, avoiding obstacles.
+ * Tries direct aim first, then sweeps left/right of center to find
+ * a path that hits the target ball without hitting another ball first.
+ * Returns the angle and whether it's a thin (edge) hit.
+ */
+function findContactAngle(
+  state: GameState,
+  targetBall: Ball,
+): { angle: number; blocked: boolean } {
+  const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
+  if (!cueBall) return { angle: 0, blocked: true };
+
+  const directAngle = angleBetween(cueBall.pos, targetBall.pos);
+  const activeBalls = state.balls.filter(b => !b.pocketed);
+
+  // Check if direct path is clear
+  if (!isPathBlocked(cueBall, targetBall, activeBalls)) {
+    return { angle: directAngle, blocked: false };
+  }
+
+  // Path blocked: try sweeping angles to find edge of target ball
+  // that avoids other balls. We sweep from the direct angle outward.
+  const dist = distanceBetween(cueBall.pos, targetBall.pos);
+  const maxOffset = Math.atan2(BALL_RADIUS * 1.5, dist); // max angle offset for edge hit
+
+  // Try 20 angles on each side
+  for (let i = 1; i <= 20; i++) {
+    const offset = maxOffset * (i / 20);
+
+    for (const sign of [1, -1]) {
+      const testAngle = directAngle + offset * sign;
+
+      // Verify with simulation: does the cue ball actually hit the target first?
+      const testState = state.balls.map(b => ({ ...b, pos: { ...b.pos }, vel: { ...b.vel } }));
+      applyShot(testState, testAngle, 0.3, 0, 0);
+      const sim = simulateShot(testState);
+
+      if (sim.firstContactBallId === targetBall.id) {
+        return { angle: testAngle, blocked: true };
+      }
+    }
+  }
+
+  // Couldn't find any angle — return direct angle as last resort
+  return { angle: directAngle, blocked: true };
+}
+
+/**
+ * For safety shots: find a valid angle that contacts the target ball first,
+ * then use medium power to leave the cue ball in a safe position.
  */
 function calculateSafetyShot(
   state: GameState,
   targetBall: Ball,
+  preferredPower: number,
 ): { angle: number; power: number } {
   const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
   if (!cueBall) return { angle: 0, power: 0.4 };
 
-  // Aim at the target ball directly
-  const angle = angleBetween(cueBall.pos, targetBall.pos);
+  const { angle } = findContactAngle(state, targetBall);
   const dist = distanceBetween(cueBall.pos, targetBall.pos);
+  const power = Math.max(0.25, Math.min(0.7, preferredPower || distanceToPower(dist) * 0.7));
 
-  // Medium power to make contact but leave cue ball safe
-  const power = distanceToPower(dist) * 0.7;
-
-  return { angle, power: Math.max(0.2, Math.min(0.7, power)) };
+  return { angle, power };
 }
 
 // ============================================================
@@ -383,14 +472,11 @@ export async function getAIMoveDecision(state: GameState): Promise<LLMDecision> 
         reasoning: strategy.reasoning + ` → 袋口${shot.pocketIndex}`,
       };
     }
-    // No pot possible → use LLM's power with direct aim for safety
-    const angle = angleBetween(
-      state.balls.find(b => b.color === 'white')!.pos,
-      targetBall.pos,
-    );
+    // No pot possible → find a valid contact angle, use as safety
+    const { angle: safeAngle } = findContactAngle(state, targetBall);
     return {
       targetBallId: strategy.targetBallId,
-      aimAngle: angle,
+      aimAngle: safeAngle,
       power: Math.max(0.3, strategy.power * 0.8),
       spinX: 0,
       spinY: 0,
@@ -399,12 +485,11 @@ export async function getAIMoveDecision(state: GameState): Promise<LLMDecision> 
     };
   }
 
-  // Safety or snooker: aim directly at target with LLM's power
-  const cueBall = state.balls.find(b => b.color === 'white')!;
-  const angle = angleBetween(cueBall.pos, targetBall.pos);
+  // Safety or snooker: find a valid contact angle avoiding obstacles
+  const { angle: safetyAngle } = findContactAngle(state, targetBall);
   return {
     targetBallId: strategy.targetBallId,
-    aimAngle: angle,
+    aimAngle: safetyAngle,
     power: strategy.power,
     spinX: 0,
     spinY: 0,
@@ -540,11 +625,11 @@ export function getFallbackDecision(state: GameState): LLMDecision {
   }
 
   if (targetBall) {
-    const safety = calculateSafetyShot(state, targetBall);
+    const safety = calculateSafetyShot(state, targetBall, strategy.power);
     return {
       targetBallId: strategy.targetBallId,
       aimAngle: safety.angle,
-      power: strategy.power,
+      power: safety.power,
       spinX: 0,
       spinY: 0,
       strategy: 'safety',
