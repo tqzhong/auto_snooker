@@ -133,11 +133,13 @@ export class TableRenderer {
     ctx.stroke();
 
     // D-zone (semi-circle on baulk line, opening toward top cushion)
+    // In canvas: baulk line is on the RIGHT, top cushion is LEFT
+    // Semi-circle extends from bottom → left → top (angles π/2 → π → 3π/2)
     const centerPx = pad + toPixel(CENTER_Y);
     ctx.strokeStyle = 'rgba(255,255,255,0.3)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.arc(baulkPx, centerPx, toPixel(D_ZONE_RADIUS), 0, Math.PI * 2);
+    ctx.arc(baulkPx, centerPx, toPixel(D_ZONE_RADIUS), Math.PI / 2, Math.PI * 1.5, false);
     ctx.stroke();
 
     // Centre line (horizontal through blue spot)

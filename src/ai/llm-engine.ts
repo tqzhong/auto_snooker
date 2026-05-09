@@ -372,8 +372,8 @@ export function getFallbackDecision(state: GameState): LLMDecision {
 
 function isNearPocket(ball: Ball): boolean {
   const pockets: [number, number][] = [
-    [54, 54], [0, TABLE_WIDTH / 2], [54, TABLE_WIDTH - 54],
-    [TABLE_LENGTH - 54, 54], [TABLE_LENGTH, TABLE_WIDTH / 2], [TABLE_LENGTH - 54, TABLE_WIDTH - 54],
+    [54, 54], [TABLE_LENGTH / 2, 0], [54, TABLE_WIDTH - 54],
+    [TABLE_LENGTH - 54, 54], [TABLE_LENGTH / 2, TABLE_WIDTH], [TABLE_LENGTH - 54, TABLE_WIDTH - 54],
   ];
 
   for (const [px, py] of pockets) {

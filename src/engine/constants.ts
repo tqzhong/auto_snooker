@@ -76,22 +76,22 @@ export const CUE_BALL_BREAK_POS: [number, number] = [BAULK_LINE_X, CENTER_Y + D_
 
 // ============================================================
 // POCKETS — 6 pockets
-//   Corners at x≈0 or x≈TABLE_LENGTH, y≈0 or y≈TABLE_WIDTH
-//   Middles at x=0 or x=TABLE_LENGTH, y=CENTER_Y
+//   4 corners at the four corners of the table
+//   2 middles at the centre of each LONG cushion (side cushions)
 // ============================================================
 
 export const POCKET_POSITIONS: [number, number][] = [
-  // Top-left corner (Top cushion + Left cushion)
+  // Top-left corner (Top cushion + Left side cushion)
   [CORNER_POCKET_RADIUS * 0.4, CORNER_POCKET_RADIUS * 0.4],
-  // Top-middle (centre of Top cushion)
-  [0, CENTER_Y],
-  // Top-right corner (Top cushion + Right cushion)
+  // Left-middle (centre of Left side cushion, long edge)
+  [TABLE_LENGTH / 2, 0],
+  // Top-right corner (Top cushion + Right side cushion)
   [CORNER_POCKET_RADIUS * 0.4, TABLE_WIDTH - CORNER_POCKET_RADIUS * 0.4],
-  // Bottom-left corner (Baulk cushion + Left cushion)
+  // Bottom-left corner (Baulk cushion + Left side cushion)
   [TABLE_LENGTH - CORNER_POCKET_RADIUS * 0.4, CORNER_POCKET_RADIUS * 0.4],
-  // Bottom-middle (centre of Baulk cushion)
-  [TABLE_LENGTH, CENTER_Y],
-  // Bottom-right corner (Baulk cushion + Right cushion)
+  // Right-middle (centre of Right side cushion, long edge)
+  [TABLE_LENGTH / 2, TABLE_WIDTH],
+  // Bottom-right corner (Baulk cushion + Right side cushion)
   [TABLE_LENGTH - CORNER_POCKET_RADIUS * 0.4, TABLE_WIDTH - CORNER_POCKET_RADIUS * 0.4],
 ];
 
