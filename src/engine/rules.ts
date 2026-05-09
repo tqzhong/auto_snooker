@@ -107,17 +107,8 @@ export function evaluateShot(
     }
   }
 
-  // 4. No cushion hit after contact (and no ball potted)
-  if (simResult.firstContactBallId !== null &&
-    !simResult.cushionHitAfterContact &&
-    simResult.pottedBalls.length === 0 &&
-    !simResult.cueBallPotted) {
-    fouls.push({
-      type: 'no_cushion_after_contact',
-      points: MIN_FOUL_POINTS,
-      description: '碰球后没有球碰到库边且没有进球',
-    });
-  }
+  // NOTE: "no cushion after contact" is NOT a foul in snooker
+  // (only applies in some pool variants). Removed.
 
   // --- Calculate fouls penalty ---
   // Per rules: foul points = max of all fouls, or max of ball values involved, minimum 4

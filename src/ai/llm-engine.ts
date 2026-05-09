@@ -31,6 +31,7 @@ interface ChatMessage {
 
 interface LLMStrategyChoice {
   targetBallId: number;
+  power: number;
   strategy: 'attack' | 'safety' | 'snooker';
   reasoning: string;
 }
@@ -126,12 +127,14 @@ function simulateAndCheckPot(
 }
 
 /**
- * For a given target ball, find the best pocket to aim for,
- * calculate the exact angle and power, and verify via simulation.
+ * For a given target ball, find the best pocket to aim for.
+ * Uses LLM's preferred power, verifies via simulation.
+ * Falls back to nearby power levels if LLM's power doesn't pot.
  */
 function calculateBestShot(
   state: GameState,
   targetBall: Ball,
+  preferredPower: number,
 ): { angle: number; power: number; pocketIndex: number } | null {
   const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
   if (!cueBall) return null;
@@ -146,20 +149,18 @@ function calculateBestShot(
 
   // Try each pocket (nearest first), find one that works
   for (const pocket of pockets) {
-    // Skip if target is too far from pocket (> table length is unlikely pot)
     if (pocket.dist > TABLE_LENGTH * 0.8) continue;
 
     // Calculate ghost-ball aim angle
     const angle = calculatePotAngle(cueBall, targetBall, pocket.pos);
 
-    // Calculate power: distance from cue ball to ghost ball position
-    const ghostX = targetBall.pos.x - (pocket.pos.x - targetBall.pos.x) / pocket.dist * BALL_RADIUS * 2;
-    const ghostY = targetBall.pos.y - (pocket.pos.y - targetBall.pos.y) / pocket.dist * BALL_RADIUS * 2;
-    const cueToGhost = distanceBetween(cueBall.pos, { x: ghostX, y: ghostY });
-    const basePower = distanceToPower(cueToGhost);
-
-    // Try a few power levels around the base
-    const powerLevels = [basePower, basePower * 0.85, basePower * 1.15];
+    // Try LLM's preferred power first, then fallback levels
+    const powerLevels = [
+      preferredPower,
+      preferredPower * 0.8,
+      preferredPower * 1.2,
+      distanceToPower(distanceBetween(cueBall.pos, targetBall.pos)), // physics-calculated fallback
+    ];
 
     for (const power of powerLevels) {
       const clamped = Math.max(0.15, Math.min(1.0, power));
@@ -235,15 +236,25 @@ function buildSystemPrompt(): string {
 - 开球必须先碰红球
 - 犯规罚分给对手（最低4分，最高7分）
 
-你的职责是选择策略，角度和力量由物理引擎计算。
+你的职责是选择目标球、策略和力度。角度由物理引擎精确计算。
 只输出JSON，不要有任何其他文字。
 
 输出格式：
 {
   "targetBallId": 目标球id,
+  "power": 力度(0.1到1.0),
   "strategy": "attack"或"safety"或"snooker",
   "reasoning": "理由(15字内)"
 }
+
+力度指南：
+- 0.2-0.3: 轻推（短距离精准走位）
+- 0.4-0.5: 中力（标准进攻）
+- 0.6-0.7: 中大力（长距离进攻、开球散堆）
+- 0.8-1.0: 大力（强力开球、大力防守）
+- 进攻时根据白球到目标球的距离选力度
+- 防守时可以用较大力度让白球走到安全区域
+- 开球时用0.7-0.9的力度散开红球堆
 
 策略选择指南：
 - attack: 有进球机会（目标球靠近袋口），进攻得分
@@ -278,15 +289,26 @@ function buildUserPrompt(state: GameState): string {
     targetInfo = targetDetails.join('\n');
   }
 
+  // Calculate distances for power reference
+  let distInfo = '';
+  if (cueBall) {
+    const targets = state.balls.filter(b => available.ballIds.includes(b.id) && !b.pocketed);
+    distInfo = targets.map(t => {
+      const dist = Math.round(distanceBetween(cueBall.pos, t.pos));
+      return `#${t.id}(${t.color}) 距白球${dist}mm`;
+    }).join(' | ');
+  }
+
   return `你是${current.name}，得分${current.score}，对手${opponent.score}。
 阶段: ${state.phase === 'break_off' ? '开球' : state.phase === 'reds_phase' ? '红球' : '彩球'}
 台面: ${formatBallState(state.balls)}
 合法目标: ${available.description}
 各目标详情:
 ${targetInfo}
+距离参考: ${distInfo}
 历史: ${formatShotHistory(state.shotHistory, [state.players[0].name, state.players[1].name])}
 
-请选目标球和策略（严格JSON）：`;
+请选目标球、力度和策略（严格JSON）：`;
 }
 
 function getAvailableTargets(state: GameState): { description: string; ballIds: number[] } {
@@ -336,26 +358,29 @@ export async function getAIMoveDecision(state: GameState): Promise<LLMDecision> 
     return getFallbackDecision(state);
   }
 
-  // Step 3: Calculate precise angle and power via physics
+  // Step 3: Calculate precise angle via physics, use LLM's power
   if (strategy.strategy === 'attack') {
-    const shot = calculateBestShot(state, targetBall);
+    const shot = calculateBestShot(state, targetBall, strategy.power);
     if (shot) {
       return {
         targetBallId: strategy.targetBallId,
         aimAngle: shot.angle,
         power: shot.power,
         spinX: 0,
-        spinY: -0.05, // slight backspin for position
+        spinY: -0.05,
         strategy: 'attack',
         reasoning: strategy.reasoning + ` → 袋口${shot.pocketIndex}`,
       };
     }
-    // Attack failed in simulation, fall back to safety
-    const safety = calculateSafetyShot(state, targetBall);
+    // No pot possible → use LLM's power with direct aim for safety
+    const angle = angleBetween(
+      state.balls.find(b => b.color === 'white')!.pos,
+      targetBall.pos,
+    );
     return {
       targetBallId: strategy.targetBallId,
-      aimAngle: safety.angle,
-      power: safety.power,
+      aimAngle: angle,
+      power: Math.max(0.3, strategy.power * 0.8),
       spinX: 0,
       spinY: 0,
       strategy: 'safety',
@@ -363,12 +388,13 @@ export async function getAIMoveDecision(state: GameState): Promise<LLMDecision> 
     };
   }
 
-  // Safety or snooker
-  const safety = calculateSafetyShot(state, targetBall);
+  // Safety or snooker: aim directly at target with LLM's power
+  const cueBall = state.balls.find(b => b.color === 'white')!;
+  const angle = angleBetween(cueBall.pos, targetBall.pos);
   return {
     targetBallId: strategy.targetBallId,
-    aimAngle: safety.angle,
-    power: safety.power,
+    aimAngle: angle,
+    power: strategy.power,
     spinX: 0,
     spinY: 0,
     strategy: strategy.strategy,
@@ -434,6 +460,7 @@ async function getLLMStrategy(state: GameState): Promise<LLMStrategyChoice> {
 
     return {
       targetBallId: Math.round(parsed.targetBallId),
+      power: typeof parsed.power === 'number' ? Math.max(0.15, Math.min(1.0, parsed.power)) : 0.5,
       strategy: parsed.strategy === 'safety' || parsed.strategy === 'snooker'
         ? parsed.strategy : 'attack',
       reasoning: parsed.reasoning || '',
@@ -448,7 +475,7 @@ function getFallbackStrategy(state: GameState): LLMStrategyChoice {
   const available = getAvailableTargets(state);
   const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
   if (!cueBall) {
-    return { targetBallId: available.ballIds[0] || 0, strategy: 'attack', reasoning: '' };
+    return { targetBallId: available.ballIds[0] || 0, power: 0.5, strategy: 'attack', reasoning: '' };
   }
 
   const targets = state.balls.filter(b =>
@@ -456,7 +483,7 @@ function getFallbackStrategy(state: GameState): LLMStrategyChoice {
   );
 
   if (targets.length === 0) {
-    return { targetBallId: available.ballIds[0] || 0, strategy: 'safety', reasoning: '无目标' };
+    return { targetBallId: available.ballIds[0] || 0, power: 0.4, strategy: 'safety', reasoning: '无目标' };
   }
 
   // Pick the target closest to any pocket (best pot chance)
@@ -472,8 +499,10 @@ function getFallbackStrategy(state: GameState): LLMStrategyChoice {
 
   // If close to pocket, attack; otherwise safety
   const nearPocket = bestPocketDist < 300;
+  const dist = distanceBetween(cueBall.pos, bestTarget.pos);
   return {
     targetBallId: bestTarget.id,
+    power: nearPocket ? 0.45 : 0.55,
     strategy: nearPocket ? 'attack' : 'safety',
     reasoning: nearPocket ? `${bestTarget.color}近袋` : '防守',
   };
@@ -485,7 +514,7 @@ export function getFallbackDecision(state: GameState): LLMDecision {
   const targetBall = state.balls.find(b => b.id === strategy.targetBallId && !b.pocketed);
 
   if (targetBall && strategy.strategy === 'attack') {
-    const shot = calculateBestShot(state, targetBall);
+    const shot = calculateBestShot(state, targetBall, strategy.power);
     if (shot) {
       return {
         targetBallId: strategy.targetBallId,
@@ -504,7 +533,7 @@ export function getFallbackDecision(state: GameState): LLMDecision {
     return {
       targetBallId: strategy.targetBallId,
       aimAngle: safety.angle,
-      power: safety.power,
+      power: strategy.power,
       spinX: 0,
       spinY: 0,
       strategy: 'safety',
