@@ -103,8 +103,10 @@ function distanceToPower(dist: number): number {
 }
 
 /**
- * Simulate a shot and check if the target ball ends up in a pocket.
- * Returns true if pot is successful.
+ * Simulate a shot and verify:
+ * 1. The cue ball FIRST contacts the target ball (not another ball)
+ * 2. The target ball ends up in a pocket
+ * Both conditions must be met for a valid pot.
  */
 function simulateAndCheckPot(
   balls: Ball[],
@@ -112,7 +114,6 @@ function simulateAndCheckPot(
   power: number,
   targetBallId: number,
 ): { potted: boolean; simResult: SimulationResult } {
-  // Deep copy
   const copy = balls.map(b => ({
     ...b,
     pos: { ...b.pos },
@@ -122,8 +123,12 @@ function simulateAndCheckPot(
   applyShot(copy, angle, power, 0, 0);
   const simResult = simulateShot(copy);
 
-  const potted = simResult.pottedBalls.some(b => b.id === targetBallId);
-  return { potted, simResult };
+  // Critical: first contact must be the target ball
+  const firstContactValid = simResult.firstContactBallId === targetBallId;
+  // Target ball must be potted
+  const targetPotted = simResult.pottedBalls.some(b => b.id === targetBallId);
+
+  return { potted: firstContactValid && targetPotted, simResult };
 }
 
 /**
