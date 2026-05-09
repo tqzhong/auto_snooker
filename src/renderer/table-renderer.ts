@@ -231,14 +231,7 @@ export class TableRenderer {
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.stroke();
 
-      // Number on reds
-      if (ball.color === 'red') {
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = `bold ${Math.max(8, r * 0.8)}px Arial`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(String(ball.id), x, y);
-      }
+      // Red balls: clean, no number label
 
       // White dot on color balls
       if (ball.color !== 'red' && ball.color !== 'white') {

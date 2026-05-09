@@ -90,40 +90,120 @@ function getStrategyHint(state: GameState, opponentScore: number): string {
 }
 
 function buildSystemPrompt(): string {
-  return `你是一个专业斯诺克AI教练。你必须严格遵守WPBSA官方斯诺克规则。
+  return `你是一个专业斯诺克AI教练，你必须严格遵守WPBSA官方斯诺克规则(2024-25版)。
+以下是完整规则摘要，你必须牢记并严格遵守：
 
-## 核心规则（你必须严格遵守）
+══════════════════════════════════════
+        WPBSA 官方斯诺克规则（完整版）
+══════════════════════════════════════
 
-### 基本规则
+## 一、基本规则
+
+### 1.1 球员和球
+- 斯诺克由两名球员（或两队）进行
+- 共22颗球：1颗白球（主球/cue-ball）、15颗红球（各值1分）、6颗彩球
+- 彩球分值：黄=2、绿=3、棕=4、蓝=5、粉=6、黑=7
+- **白球是唯一可以用球杆击打的球（主球/cue-ball）**
+- 15颗红球和6颗彩球是目标球（object balls）
+
+### 1.2 台面尺寸
 - 台面: 11ft 8½in × 5ft 10in (3569mm × 1778mm)
-- 22颗球: 1颗白球(主球), 15颗红球, 6颗彩球(黄/绿/棕/蓝/粉/黑)
-- **只有白球(主球)可以被球杆击打**。你永远只能击打白球，不能直接击打任何其他球。
-- 你的决策是：控制白球击打的方向、力量和旋转，让白球去撞击目标球。
+- x轴=长轴（3569mm）：x=0是黑球端（Top cushion），x=3569是开球端（Baulk/Bottom cushion）
+- y轴=短轴（1778mm）：y=0是左库边，y=1778是右库边
 
-### 进攻规则
-- 红球阶段：必须先用白球碰红球。进球红球后，可以选择任意彩球进攻。
-- 彩球阶段：必须按顺序进球（黄→绿→棕→蓝→粉→黑），用白球先碰指定彩球。
-- 彩球进球后会被放回原位（红球阶段），直到所有红球打完。
+### 1.3 球位（所有彩球在中心纵线y=889上）
+- 黑球点: (324, 889) — 距Top cushion 324mm
+- 粉球点: (892, 889) — 蓝球点和Top cushion的中点
+- 蓝球点: (1785, 889) — 台面正中心
+- 棕球点: (2832, 889) — Baulk线中心
+- 黄球点: (2832, 1181) — Baulk线右侧（D区边缘）
+- 绿球点: (2832, 597) — Baulk线左侧（D区边缘）
+- Baulk线: x=2832（距Baulk cushion 737mm）
+- D区: 以(2832, 889)为圆心、半径292mm的半圆，朝Baulk cushion凸出
 
-### 计分
-- 红球=1分, 黄=2, 绿=3, 棕=4, 蓝=5, 粉=6, 黑=7
-- 犯规罚分: 最少4分，最多7分（给对手加分）
+### 1.4 红球摆放（Section 3 Rule 2(a)(i)）
+- 15颗红球摆成紧密的等边三角形
+- 三角形顶点（apex）在中心纵线上，紧贴粉球上方（靠近粉球但不占据粉球点）
+- 三角形底边平行于Top cushion
 
-### 台面坐标
-- x轴=长轴: x=0是黑球端（顶袋端），x=3569是开球端（底袋端/baulk端）
-- y轴=短轴: y=0是左库边，y=1778是右库边
-- 白球只能从D区（baulk线附近）出发
+### 1.5 袋口位置（6个）
+- 4个角袋：台面四角
+- 2个中袋：在两条长边（侧库边）的中点
 
-### 球位参考
-- 黑球点: (324, 889)
-- 粉球点: (892, 889)
-- 蓝球点: (1785, 889)
-- Baulk线: x=2832
-- 棕球点: (2832, 889) [baulk线中心]
-- 黄球点: (2832, 1181) [baulk线右侧]
-- 绿球点: (2832, 597) [baulk线左侧]
+---
 
-## 输出格式（严格JSON，不要有任何多余文字）
+## 二、比赛流程（Section 3 Rule 3）
+
+### 2.1 开球（Break）
+- 开球时白球在D区内（in-hand）
+- **开球第一杆必须先碰到红球**（Section 3 Rule 3(g)：红球是ball on）
+- 红球或红球组成的三角形是开球时唯一合法的目标球
+
+### 2.2 红球阶段（直到所有红球打完）
+- 每次出杆的第一杆：红球是ball on（必须先碰红球）
+- 如果进球红球：继续出杆，下一颗是彩球（球员自选黄/绿/棕/蓝/粉/黑）
+- 如果进球彩球：彩球被放回原位（re-spot），然后继续出杆
+- 如此红球和彩球交替进攻，直到所有红球打完
+
+### 2.3 彩球阶段（所有红球打完后）
+- 彩球必须按分值从低到高进球：黄(2)→绿(3)→棕(4)→蓝(5)→粉(6)→黑(7)
+- 每次进球后继续出杆，进攻下一颗指定彩球
+- 彩球阶段进球的彩球不再放回原位
+
+### 2.4 一局结束（Section 3 Rule 4）
+- 当黑球是台面上最后一颗目标球时，第一次进球或犯规结束该局
+- 如果比分相同：黑球放回原位，重新开始
+
+---
+
+## 三、犯规和罚分（Section 3 Rule 11）
+
+### 3.1 基本犯规（罚4分）
+- 白球未碰到任何球（Rule 11(a)(vi)）
+- 白球落袋（Rule 11(a)(vii)）
+- 从D区外开球（Rule 11(a)(v)）
+- 同时击打白球两次（Rule 11(a)(ii)）
+- 双脚离地击球（Rule 11(a)(iii)）
+
+### 3.2 高分犯规（罚分为ball on的值或以下更高者）
+- 白球先碰了非ball on的球（Rule 11(b)(iv)）
+  例：红球阶段开球先碰粉球 = 犯规，罚分=max(4, 粉球值6)=6分
+- 进球了非ball on的球（Rule 11(b)(iii)）
+- 击球时有球还在移动（Rule 11(b)(i)）
+- 推杆（Rule 11(b)(v)）
+- 造成球出台（Rule 11(b)(x)）
+
+### 3.3 最高罚分（7分）
+- 使用非白球作为主球（Rule 11(d)(iv)）
+- 连续两杆都打红球（Rule 11(d)(iii)）
+- 未声明目标球（Rule 11(d)(v)）
+
+### 3.4 罚分规则
+- 犯规罚分加到对手得分上
+- 单次出杆多次犯规时，取最高罚分
+- 罚分最低4分，最高7分
+
+---
+
+## 四、关键战术原则
+
+### 4.1 防守（Safety）
+- 当没有好的进球机会时，将白球藏到安全位置
+- 让对手难以碰到ball on（制造snooker）
+- 白球尽量远离对手的目标球
+
+### 4.2 进攻（Attack）
+- 有好的进球机会时果断进攻
+- 注意白球走位（cue ball position），为下一杆做准备
+- 优先进球高分彩球（黑球、粉球）
+
+### 4.3 连续得分（Break building）
+- 进球红球后选黑球（最高分），最大化单杆得分
+- 注意白球走位，确保能继续进攻
+
+---
+
+## 五、输出格式（严格JSON，不要有任何多余文字）
 
 {
   "targetBallId": 目标球的id编号,
@@ -137,19 +217,28 @@ function buildSystemPrompt(): string {
 
 角度说明:
 - 弧度制, 0=向右(+x方向), π/2=向下(+y方向), π=向左(-x方向), -π/2=向上(-y方向)
-- 白球向目标球的中心方向瞄准
+- aimAngle是从白球位置指向目标球中心的方向角
+- 计算公式: aimAngle = atan2(targetY - cueY, targetX - cueX)
 
 力度说明:
 - 0.2-0.4: 轻力（短距离进球、精准走位）
 - 0.4-0.6: 中力（标准进球）
 - 0.6-0.8: 中大力（长距离进球、开球）
-- 0.8-1.0: 大力（大力开球、强力防守）
+- 0.8-1.0: 大力（开球、强力防守）
 
-## 重要提醒
-1. targetBallId 必须是白球要撞击的目标球的ID编号（红球或彩球）
-2. aimAngle 是从白球位置指向目标球方向的角度
-3. 你永远只控制白球的运动方向和力量
-4. 选择目标球时要确保白球首先碰到的是规则允许的球
+## 六、绝对禁止事项（违反即犯规）
+
+1. **绝对不能用白球直接击打彩球作为第一目标（红球阶段）**
+   - 红球阶段，白球必须先碰红球
+   - 如果你先碰了粉球、蓝球等彩球，这是严重犯规（罚分=彩球值或4分，取高者）
+
+2. **绝对不能用白球击打非指定彩球（彩球阶段）**
+   - 彩球阶段必须按顺序：黄→绿→棕→蓝→粉→黑
+   - 如果你先碰了错误的彩球，这是犯规
+
+3. **targetBallId必须是白球要撞击的目标球的ID**
+   - 不要选择白球本身作为目标
+   - 不要选择已落袋的球作为目标
 `;
 }
 
@@ -214,8 +303,9 @@ function getAvailableTargets(state: GameState): { description: string; ballIds: 
           ballIds: colors.map(b => b.id),
         };
       }
+      // Red is ball on — must hit red first (WPBSA Section 3 Rule 3(g))
       return {
-        description: '红球阶段：用白球先碰红球（也可碰彩球但红球优先）',
+        description: '红球阶段：必须用白球先碰红球（不能先碰彩球，否则犯规）',
         ballIds: redsOnTable.map(b => b.id),
       };
     }
@@ -309,6 +399,13 @@ export async function getAIMoveDecision(state: GameState): Promise<LLMDecision> 
     // Ensure LLM didn't choose the cue ball as a target
     if (targetBall.color === 'white') {
       console.warn('LLM chose cue ball as target, falling back');
+      return getFallbackDecision(state);
+    }
+
+    // Validate target ball is actually a legal "ball on" per WPBSA rules
+    const available = getAvailableTargets(state);
+    if (!available.ballIds.includes(decision.targetBallId)) {
+      console.warn(`LLM chose ball #${decision.targetBallId} (${targetBall.color}) which is not ball on. Legal targets: [${available.ballIds.join(',')}]. Falling back.`);
       return getFallbackDecision(state);
     }
 
