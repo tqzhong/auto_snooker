@@ -243,19 +243,37 @@ function findContactAngle(
     return { angle: directAngle, blocked: false };
   }
 
-  // Path blocked: try sweeping angles to find edge of target ball
-  // that avoids other balls. We sweep from the direct angle outward.
+  // Path blocked: sweep angles from direct aim outward.
+  // We need a wide sweep to reach the edges of a red triangle from D-zone.
+  // The target ball's angular width as seen from the cue ball:
   const dist = distanceBetween(cueBall.pos, targetBall.pos);
-  const maxOffset = Math.atan2(BALL_RADIUS * 1.5, dist); // max angle offset for edge hit
+  // Sweep up to ±12 degrees (0.21 rad) — enough to reach edges of the red cluster
+  const maxOffset = 0.21;
+  const steps = 40;
 
-  // Try 20 angles on each side
-  for (let i = 1; i <= 20; i++) {
-    const offset = maxOffset * (i / 20);
+  // Try angles on each side, alternating left/right
+  for (let i = 1; i <= steps; i++) {
+    const offset = maxOffset * (i / steps);
 
     for (const sign of [1, -1]) {
       const testAngle = directAngle + offset * sign;
 
-      // Verify with simulation: does the cue ball actually hit the target first?
+      // Quick path check first (no physics sim needed)
+      const testTarget = {
+        id: -999,
+        color: 'red' as BallColor,
+        pos: {
+          x: cueBall.pos.x + Math.cos(testAngle) * dist,
+          y: cueBall.pos.y + Math.sin(testAngle) * dist,
+        },
+        vel: { x: 0, y: 0 },
+        radius: BALL_RADIUS,
+        pocketed: false,
+        active: true,
+      };
+      if (isPathBlocked(cueBall, testTarget, activeBalls)) continue;
+
+      // Verify with low-power simulation: does the cue ball hit the target first?
       const testState = state.balls.map(b => ({ ...b, pos: { ...b.pos }, vel: { ...b.vel } }));
       applyShot(testState, testAngle, 0.3, 0, 0);
       const sim = simulateShot(testState);
