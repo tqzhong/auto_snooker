@@ -259,12 +259,18 @@ export function applyShotResult(
     newState.consecutiveFouls = 0;
   }
 
-  // Re-spot color balls if potted while reds remain
-  const redsOnTable = newState.balls.filter(b => b.color === 'red' && !b.pocketed).length;
-  if (redsOnTable > 0) {
+  // Re-spot color balls if potted while reds remain on the table
+  // WPBSA Rule 7: colours are spotted until the last red is potted
+  // AND a colour has been played at following the potting of the last red.
+  // If the last red AND a colour are potted in the SAME stroke,
+  // the colour must still be re-spotted (reds were on the table when
+  // the stroke began).
+  const redsPottedThisShot = shotResult.pottedBalls.filter(b => b.color === 'red').length;
+  const redsOnTableBefore = state.balls.filter(b => b.color === 'red' && !b.pocketed).length;
+  // Re-spot if there were reds before this shot (including last red potted this shot)
+  if (redsOnTableBefore > 0) {
     for (const potted of shotResult.pottedBalls) {
       if (potted.color !== 'red') {
-        // Re-spot the color ball on its designated spot
         const colorBall = newState.balls.find(b => b.id === potted.id);
         if (colorBall) {
           colorBall.pocketed = false;
@@ -280,10 +286,21 @@ export function applyShotResult(
   newState.redsRemaining = newState.balls.filter(b => b.color === 'red' && !b.pocketed).length;
 
   // Update game phase
-  if (newState.redsRemaining === 0 && state.phase !== 'colors_phase' && state.phase !== 'game_over') {
+  // WPBSA: After the last red is potted, the player still gets to choose a colour.
+  // The ordered colours_phase only begins AFTER that chosen colour has been played at.
+  // So we only transition to colors_phase when:
+  //   - no reds remain on the table, AND
+  //   - the current shot did NOT pot a red (i.e. the last red was potted in a previous shot)
+  const pottedARedThisShot = shotResult.pottedBalls.some(b => b.color === 'red');
+
+  if (newState.redsRemaining === 0 && !pottedARedThisShot && state.phase !== 'colors_phase' && state.phase !== 'game_over') {
+    // Last red was already gone before this shot → enter ordered colors phase
     newState.phase = 'colors_phase';
-    // Find next color to pot
     newState.nextColorToPot = findNextColor(newState.balls);
+  } else if (newState.redsRemaining === 0 && pottedARedThisShot) {
+    // Just potted the last red → stay in reds_phase for one more color choice
+    // (player can pick any colour, then ordered phase begins)
+    newState.phase = 'reds_phase';
   } else if (state.phase === 'break_off') {
     newState.phase = 'reds_phase';
   } else {

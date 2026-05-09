@@ -334,6 +334,12 @@ function getAvailableTargets(state: GameState): { description: string; ballIds: 
         ballIds: redsOnTable.map(b => b.id),
       };
     }
+    // No reds left but still reds_phase → last red was just potted, player can choose any colour
+    const colors = state.balls.filter(b => COLORS_ORDER.includes(b.color as BallColor) && !b.pocketed);
+    return {
+      description: '刚进球最后一颗红球，可以选择任意彩球进攻',
+      ballIds: colors.map(b => b.id),
+    };
   }
 
   if (state.phase === 'colors_phase' && state.nextColorToPot) {
