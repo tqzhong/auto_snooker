@@ -74,10 +74,7 @@ export function ShotHistory({ history, players }: ShotHistoryProps) {
               </div>
               {record.llmReasoning && (
                 <div style={styles.reasoning}>
-                  {record.llmReasoning.length > 60
-                    ? record.llmReasoning.slice(0, 60) + '...'
-                    : record.llmReasoning
-                  }
+                  {record.llmReasoning}
                 </div>
               )}
             </div>
@@ -186,9 +183,10 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '11px',
   },
   reasoning: {
-    fontSize: '10px',
-    color: 'rgba(255,255,255,0.3)',
-    fontStyle: 'italic',
-    marginTop: '2px',
+    fontSize: '11px',
+    lineHeight: 1.45,
+    color: 'rgba(255,255,255,0.58)',
+    marginTop: '6px',
+    whiteSpace: 'normal' as const,
   },
 };

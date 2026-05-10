@@ -87,6 +87,10 @@ export default function App() {
     try {
       // Get AI decision
       const decision = await getAIMoveDecision(state);
+      setGameState(prev => ({
+        ...prev,
+        statusMessage: `AI决策: ${decision.reasoning}`,
+      }));
 
       // Show aim line
       const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);

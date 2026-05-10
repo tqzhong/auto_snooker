@@ -16,9 +16,10 @@ import {
 import type { SimulationResult } from '../engine/physics';
 
 // API config from environment
-const API_KEY = import.meta.env.VITE_AI_API_KEY || '';
-const BASE_URL = import.meta.env.VITE_AI_BASE_URL || 'https://token-plan-cn.xiaomimimo.com/v1';
-const MODEL = import.meta.env.VITE_AI_MODEL || 'mimo-v2.5-pro';
+const ENV = import.meta.env || {};
+const API_KEY = ENV.VITE_AI_API_KEY || '';
+const BASE_URL = ENV.VITE_AI_BASE_URL || 'https://token-plan-cn.xiaomimimo.com/v1';
+const MODEL = ENV.VITE_AI_MODEL || 'mimo-v2.5-pro';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -32,8 +33,11 @@ interface ChatMessage {
 interface LLMStrategyChoice {
   targetBallId: number;
   power: number;
+  spinX: number;
+  spinY: number;
   strategy: 'attack' | 'safety' | 'snooker';
   reasoning: string;
+  source: 'llm' | 'fallback';
 }
 
 // ============================================================
@@ -56,6 +60,68 @@ function nearestPocket(ball: Ball): { pos: Vec2; radius: number; dist: number } 
   return best;
 }
 
+function clampUnit(value: number): number {
+  return Math.max(-1, Math.min(1, value));
+}
+
+function describeStrategy(strategy: 'attack' | 'safety' | 'snooker'): string {
+  if (strategy === 'attack') return '进攻';
+  if (strategy === 'snooker') return '做斯诺克';
+  return '防守';
+}
+
+function describeSpin(spinX: number, spinY: number): string {
+  const side = spinX < -0.05 ? `左塞${Math.abs(spinX).toFixed(2)}` :
+    spinX > 0.05 ? `右塞${spinX.toFixed(2)}` : '中杆';
+  const vertical = spinY < -0.05 ? `低杆${Math.abs(spinY).toFixed(2)}` :
+    spinY > 0.05 ? `高杆${spinY.toFixed(2)}` : '中杆';
+  return `${vertical}/${side}`;
+}
+
+function parseTargetBallId(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.round(value);
+  if (typeof value === 'string') {
+    const match = value.match(/-?\d+/);
+    if (match) return Number.parseInt(match[0], 10);
+  }
+  return null;
+}
+
+function normalizeStrategy(value: unknown): 'attack' | 'safety' | 'snooker' {
+  if (typeof value !== 'string') return 'attack';
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'safety' || normalized.includes('safe') || normalized.includes('防守')) return 'safety';
+  if (normalized === 'snooker' || normalized.includes('斯诺克')) return 'snooker';
+  return 'attack';
+}
+
+function parseLLMJson(content: string): Record<string, unknown> | null {
+  const trimmed = content.trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function formatDecisionAnalysis(
+  strategy: LLMStrategyChoice,
+  targetBall: Ball,
+  finalStrategy: 'attack' | 'safety' | 'snooker',
+  details: string,
+): string {
+  const source = strategy.source === 'llm' ? 'LLM' : 'Fallback';
+  return `[${source}] ${describeStrategy(finalStrategy)} ${targetBall.color}#${targetBall.id} ` +
+    `power=${strategy.power.toFixed(2)} 杆法=${describeSpin(strategy.spinX, strategy.spinY)}。` +
+    `${details}${strategy.reasoning ? ` 分析: ${strategy.reasoning}` : ''}`;
+}
+
 /**
  * Calculate the aim angle to pot a target ball into a specific pocket.
  * Uses the "ghost ball" method:
@@ -70,11 +136,19 @@ function calculatePotAngle(
   targetBall: Ball,
   pocketPos: Vec2,
 ): number {
+  const ghost = calculateGhostBallPosition(targetBall, pocketPos);
+  if (!ghost) return angleBetween(cueBall.pos, targetBall.pos);
+
+  // Aim from cue ball to ghost ball
+  return angleBetween(cueBall.pos, ghost);
+}
+
+function calculateGhostBallPosition(targetBall: Ball, pocketPos: Vec2): Vec2 | null {
   // Direction from target ball to pocket
   const tpx = pocketPos.x - targetBall.pos.x;
   const tpy = pocketPos.y - targetBall.pos.y;
   const tpLen = Math.sqrt(tpx * tpx + tpy * tpy);
-  if (tpLen === 0) return angleBetween(cueBall.pos, targetBall.pos);
+  if (tpLen === 0) return null;
 
   // Unit vector from target to pocket
   const tnx = tpx / tpLen;
@@ -84,8 +158,7 @@ function calculatePotAngle(
   const ghostX = targetBall.pos.x - tnx * BALL_RADIUS * 2;
   const ghostY = targetBall.pos.y - tny * BALL_RADIUS * 2;
 
-  // Aim from cue ball to ghost ball
-  return angleBetween(cueBall.pos, { x: ghostX, y: ghostY });
+  return { x: ghostX, y: ghostY };
 }
 
 /**
@@ -103,6 +176,191 @@ function distanceToPower(dist: number): number {
 }
 
 /**
+ * Return which object ball a cue-ball ray would contact first.
+ * Each object ball is expanded by cue radius + object radius, so this models
+ * the legal first-contact line, including thin edge contacts.
+ */
+function getFirstBallHitFromPoint(
+  origin: Vec2,
+  cueRadius: number,
+  cueBallId: number,
+  dir: Vec2,
+  allBalls: Ball[],
+): { ballId: number; distance: number } | null {
+  let closestBallId: number | null = null;
+  let closestDistance = Infinity;
+
+  for (const ball of allBalls) {
+    if (ball.pocketed || ball.id === cueBallId) continue;
+
+    const toBall = {
+      x: ball.pos.x - origin.x,
+      y: ball.pos.y - origin.y,
+    };
+    const projection = toBall.x * dir.x + toBall.y * dir.y;
+    if (projection <= 0) continue;
+
+    const radius = cueRadius + ball.radius;
+    const centerDistSq = toBall.x * toBall.x + toBall.y * toBall.y;
+    const discriminant = radius * radius - (centerDistSq - projection * projection);
+    if (discriminant < -0.0001) continue;
+
+    const entryDistance = projection - Math.sqrt(Math.max(0, discriminant));
+    if (entryDistance < 0) continue;
+
+    if (entryDistance < closestDistance) {
+      closestDistance = entryDistance;
+      closestBallId = ball.id;
+    }
+  }
+
+  return closestBallId === null ? null : { ballId: closestBallId, distance: closestDistance };
+}
+
+function getFirstContactOnRay(
+  cueBall: Ball,
+  angle: number,
+  allBalls: Ball[],
+): number | null {
+  const dir = { x: Math.cos(angle), y: Math.sin(angle) };
+  return getFirstBallHitFromPoint(cueBall.pos, cueBall.radius, cueBall.id, dir, allBalls)?.ballId ?? null;
+}
+
+function getFirstContactAfterCushions(
+  cueBall: Ball,
+  angle: number,
+  allBalls: Ball[],
+  maxBounces = 3,
+): number | null {
+  let pos = { ...cueBall.pos };
+  const dir = { x: Math.cos(angle), y: Math.sin(angle) };
+  const minX = cueBall.radius;
+  const maxX = TABLE_LENGTH - cueBall.radius;
+  const minY = cueBall.radius;
+  const maxY = TABLE_WIDTH - cueBall.radius;
+
+  for (let bounce = 0; bounce <= maxBounces; bounce++) {
+    const ballHit = getFirstBallHitFromPoint(pos, cueBall.radius, cueBall.id, dir, allBalls);
+    let cushionDistance = Infinity;
+    let reflectX = false;
+    let reflectY = false;
+
+    if (dir.x > 0) {
+      cushionDistance = (maxX - pos.x) / dir.x;
+      reflectX = true;
+    } else if (dir.x < 0) {
+      cushionDistance = (minX - pos.x) / dir.x;
+      reflectX = true;
+    }
+
+    if (dir.y > 0) {
+      const yDistance = (maxY - pos.y) / dir.y;
+      if (yDistance < cushionDistance) {
+        cushionDistance = yDistance;
+        reflectX = false;
+        reflectY = true;
+      } else if (Math.abs(yDistance - cushionDistance) < 0.0001) {
+        reflectY = true;
+      }
+    } else if (dir.y < 0) {
+      const yDistance = (minY - pos.y) / dir.y;
+      if (yDistance < cushionDistance) {
+        cushionDistance = yDistance;
+        reflectX = false;
+        reflectY = true;
+      } else if (Math.abs(yDistance - cushionDistance) < 0.0001) {
+        reflectY = true;
+      }
+    }
+
+    if (ballHit && ballHit.distance <= cushionDistance) {
+      return ballHit.ballId;
+    }
+    if (!Number.isFinite(cushionDistance) || cushionDistance <= 0) return null;
+
+    pos = {
+      x: pos.x + dir.x * cushionDistance,
+      y: pos.y + dir.y * cushionDistance,
+    };
+    if (reflectX) dir.x *= -1;
+    if (reflectY) dir.y *= -1;
+    pos.x += dir.x * 0.01;
+    pos.y += dir.y * 0.01;
+  }
+
+  return null;
+}
+
+function shotHitsTargetFirst(
+  cueBall: Ball,
+  targetBall: Ball,
+  allBalls: Ball[],
+  angle: number,
+): boolean {
+  return getFirstContactOnRay(cueBall, angle, allBalls) === targetBall.id;
+}
+
+function isPointInsidePlayableArea(point: Vec2, margin = BALL_RADIUS): boolean {
+  return point.x >= margin &&
+    point.x <= TABLE_LENGTH - margin &&
+    point.y >= margin &&
+    point.y <= TABLE_WIDTH - margin;
+}
+
+function isBallPathClear(
+  from: Vec2,
+  to: Vec2,
+  movingBallRadius: number,
+  allBalls: Ball[],
+  ignoredIds: Set<number>,
+): boolean {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist === 0) return false;
+
+  const ux = dx / dist;
+  const uy = dy / dist;
+
+  for (const ball of allBalls) {
+    if (ball.pocketed || ignoredIds.has(ball.id)) continue;
+
+    const bx = ball.pos.x - from.x;
+    const by = ball.pos.y - from.y;
+    const projection = bx * ux + by * uy;
+    if (projection <= 0 || projection >= dist) continue;
+
+    const perpDist = Math.abs(bx * (-uy) + by * ux);
+    if (perpDist < movingBallRadius + ball.radius) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function isPotLineAvailable(
+  cueBall: Ball,
+  targetBall: Ball,
+  pocketPos: Vec2,
+  allBalls: Ball[],
+): boolean {
+  const ghost = calculateGhostBallPosition(targetBall, pocketPos);
+  if (!ghost || !isPointInsidePlayableArea(ghost, BALL_RADIUS * 0.5)) return false;
+
+  const angle = angleBetween(cueBall.pos, ghost);
+  if (!shotHitsTargetFirst(cueBall, targetBall, allBalls, angle)) return false;
+
+  return isBallPathClear(
+    targetBall.pos,
+    pocketPos,
+    targetBall.radius,
+    allBalls,
+    new Set([cueBall.id, targetBall.id]),
+  );
+}
+
+/**
  * Simulate a shot and verify:
  * 1. The cue ball FIRST contacts the target ball (not another ball)
  * 2. The target ball ends up in a pocket
@@ -112,6 +370,8 @@ function simulateAndCheckPot(
   balls: Ball[],
   angle: number,
   power: number,
+  spinX: number,
+  spinY: number,
   targetBallId: number,
 ): { potted: boolean; simResult: SimulationResult } {
   const copy = balls.map(b => ({
@@ -120,7 +380,7 @@ function simulateAndCheckPot(
     vel: { ...b.vel },
   }));
 
-  applyShot(copy, angle, power, 0, 0);
+  applyShot(copy, angle, power, spinX, spinY);
   const simResult = simulateShot(copy);
 
   // Critical: first contact must be the target ball
@@ -140,9 +400,12 @@ function calculateBestShot(
   state: GameState,
   targetBall: Ball,
   preferredPower: number,
+  spinX = 0,
+  spinY = 0,
 ): { angle: number; power: number; pocketIndex: number } | null {
   const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
   if (!cueBall) return null;
+  const activeBalls = state.balls.filter(b => !b.pocketed);
 
   // Get all 6 pockets, sorted by distance to target ball
   const pockets = POCKET_POSITIONS.map((pos, i) => ({
@@ -155,6 +418,10 @@ function calculateBestShot(
   // Try each pocket (nearest first), find one that works
   for (const pocket of pockets) {
     if (pocket.dist > TABLE_LENGTH * 0.8) continue;
+
+    if (!isPotLineAvailable(cueBall, targetBall, pocket.pos, activeBalls)) {
+      continue;
+    }
 
     // Calculate ghost-ball aim angle
     const angle = calculatePotAngle(cueBall, targetBall, pocket.pos);
@@ -169,7 +436,7 @@ function calculateBestShot(
 
     for (const power of powerLevels) {
       const clamped = Math.max(0.15, Math.min(1.0, power));
-      const { potted } = simulateAndCheckPot(state.balls, angle, clamped, targetBall.id);
+      const { potted } = simulateAndCheckPot(state.balls, angle, clamped, spinX, spinY, targetBall.id);
       if (potted) {
         return { angle, power: clamped, pocketIndex: pocket.index };
       }
@@ -180,98 +447,36 @@ function calculateBestShot(
 }
 
 /**
- * Check if a straight-line path from cue ball to target ball center
- * is blocked by any other ball (within one ball radius of the line).
- */
-function isPathBlocked(
-  cueBall: Ball,
-  targetBall: Ball,
-  allBalls: Ball[],
-): boolean {
-  const dx = targetBall.pos.x - cueBall.pos.x;
-  const dy = targetBall.pos.y - cueBall.pos.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  if (dist === 0) return false;
-
-  // Unit direction vector
-  const ux = dx / dist;
-  const uy = dy / dist;
-
-  for (const ball of allBalls) {
-    if (ball.pocketed) continue;
-    if (ball.id === cueBall.id || ball.id === targetBall.id) continue;
-
-    // Vector from cue ball to this ball
-    const bx = ball.pos.x - cueBall.pos.x;
-    const by = ball.pos.y - cueBall.pos.y;
-
-    // Project onto the line direction
-    const projection = bx * ux + by * uy;
-
-    // Only consider balls between cue and target
-    if (projection <= 0 || projection >= dist) continue;
-
-    // Perpendicular distance from the line
-    const perpDist = Math.abs(bx * (-uy) + by * ux);
-
-    // If the ball is within 2 ball radii of the line, it's a blocker
-    if (perpDist < BALL_RADIUS * 2) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
  * Find a valid angle to hit the target ball, avoiding obstacles.
- * Tries direct aim first, then sweeps left/right of center to find
- * a path that hits the target ball without hitting another ball first.
- * Returns the angle and whether it's a thin (edge) hit.
+ * Tries centre-ball first, then searches only within the target's contact cone.
+ * Returns null instead of falling back to a blocked direct shot.
  */
 function findContactAngle(
   state: GameState,
   targetBall: Ball,
-): { angle: number; blocked: boolean } {
+): { angle: number; blocked: boolean } | null {
   const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
-  if (!cueBall) return { angle: 0, blocked: true };
+  if (!cueBall) return null;
 
   const directAngle = angleBetween(cueBall.pos, targetBall.pos);
   const activeBalls = state.balls.filter(b => !b.pocketed);
-
-  // Check if direct path is clear
-  if (!isPathBlocked(cueBall, targetBall, activeBalls)) {
+  if (shotHitsTargetFirst(cueBall, targetBall, activeBalls, directAngle)) {
     return { angle: directAngle, blocked: false };
   }
 
-  // Path blocked: sweep angles from direct aim outward.
-  // We need a wide sweep to reach the edges of a red triangle from D-zone.
-  // The target ball's angular width as seen from the cue ball:
   const dist = distanceBetween(cueBall.pos, targetBall.pos);
-  // Sweep up to ±12 degrees (0.21 rad) — enough to reach edges of the red cluster
-  const maxOffset = 0.21;
-  const steps = 40;
+  if (dist <= cueBall.radius + targetBall.radius) {
+    return { angle: directAngle, blocked: false };
+  }
 
-  // Try angles on each side, alternating left/right
+  const maxOffset = Math.asin(Math.min(0.999, (cueBall.radius + targetBall.radius) / dist));
+  const steps = 32;
   for (let i = 1; i <= steps; i++) {
     const offset = maxOffset * (i / steps);
 
     for (const sign of [1, -1]) {
       const testAngle = directAngle + offset * sign;
-
-      // Quick path check first (no physics sim needed)
-      const testTarget = {
-        id: -999,
-        color: 'red' as BallColor,
-        pos: {
-          x: cueBall.pos.x + Math.cos(testAngle) * dist,
-          y: cueBall.pos.y + Math.sin(testAngle) * dist,
-        },
-        vel: { x: 0, y: 0 },
-        radius: BALL_RADIUS,
-        pocketed: false,
-        active: true,
-      };
-      if (isPathBlocked(cueBall, testTarget, activeBalls)) continue;
+      if (!shotHitsTargetFirst(cueBall, targetBall, activeBalls, testAngle)) continue;
 
       // Verify with low-power simulation: does the cue ball hit the target first?
       const testState = state.balls.map(b => ({ ...b, pos: { ...b.pos }, vel: { ...b.vel } }));
@@ -284,8 +489,7 @@ function findContactAngle(
     }
   }
 
-  // Couldn't find any angle — return direct angle as last resort
-  return { angle: directAngle, blocked: true };
+  return null;
 }
 
 /**
@@ -296,15 +500,103 @@ function calculateSafetyShot(
   state: GameState,
   targetBall: Ball,
   preferredPower: number,
-): { angle: number; power: number } {
+): { angle: number; power: number } | null {
   const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
-  if (!cueBall) return { angle: 0, power: 0.4 };
+  if (!cueBall) return null;
 
-  const { angle } = findContactAngle(state, targetBall);
+  const contact = findContactAngle(state, targetBall);
+  if (!contact) return null;
+
   const dist = distanceBetween(cueBall.pos, targetBall.pos);
   const power = Math.max(0.25, Math.min(0.7, preferredPower || distanceToPower(dist) * 0.7));
 
-  return { angle, power };
+  return { angle: contact.angle, power };
+}
+
+function getLegalTargetBalls(state: GameState): Ball[] {
+  const available = getAvailableTargets(state);
+  return state.balls.filter(b => available.ballIds.includes(b.id) && !b.pocketed);
+}
+
+function getDirectlyPlayableTargetBalls(state: GameState): Ball[] {
+  return getLegalTargetBalls(state).filter(target => findContactAngle(state, target) !== null);
+}
+
+function getPotLineCount(state: GameState, targetBall: Ball): number {
+  const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
+  if (!cueBall) return 0;
+
+  const activeBalls = state.balls.filter(b => !b.pocketed);
+  return POCKET_POSITIONS.filter(pos =>
+    isPotLineAvailable(cueBall, targetBall, { x: pos[0], y: pos[1] }, activeBalls)
+  ).length;
+}
+
+function findAnyLegalContactShot(
+  state: GameState,
+  preferredPower: number,
+): { targetBallId: number; angle: number; power: number } | null {
+  const legalIds = new Set(getLegalTargetBalls(state).map(b => b.id));
+  const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
+  if (!cueBall) return null;
+  if (legalIds.size === 0) return null;
+
+  const directTargets = getDirectlyPlayableTargetBalls(state);
+  for (const target of directTargets) {
+    const safety = calculateSafetyShot(state, target, preferredPower);
+    if (safety) {
+      return { targetBallId: target.id, angle: safety.angle, power: safety.power };
+    }
+  }
+
+  // If snookered, search for a cushion escape that first contacts any ball-on.
+  const powerLevels = [
+    Math.max(0.35, Math.min(0.9, preferredPower || 0.55)),
+    0.5,
+    0.7,
+    0.9,
+  ];
+  const steps = 240;
+  const activeBalls = state.balls.filter(b => !b.pocketed);
+
+  for (const power of powerLevels) {
+    for (let i = 0; i < steps; i++) {
+      const angle = (Math.PI * 2 * i) / steps;
+      const firstContact = getFirstContactAfterCushions(cueBall, angle, activeBalls);
+
+      if (firstContact !== null && legalIds.has(firstContact)) {
+        const testState = state.balls.map(b => ({ ...b, pos: { ...b.pos }, vel: { ...b.vel } }));
+        applyShot(testState, angle, power, 0, 0);
+        const sim = simulateShot(testState);
+
+        if (sim.firstContactBallId !== null && legalIds.has(sim.firstContactBallId)) {
+          return { targetBallId: sim.firstContactBallId, angle, power };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function chooseFallbackSpin(
+  strategy: 'attack' | 'safety' | 'snooker',
+  cueBall: Ball,
+  targetBall: Ball,
+): { spinX: number; spinY: number } {
+  const dist = distanceBetween(cueBall.pos, targetBall.pos);
+  if (strategy === 'attack') {
+    return {
+      spinX: 0,
+      spinY: dist < 900 ? -0.15 : 0.18,
+    };
+  }
+
+  const sideToOpenTable = targetBall.pos.y >= TABLE_WIDTH / 2 ? -0.25 : 0.25;
+  return {
+    spinX: sideToOpenTable,
+    spinY: -0.1,
+  };
 }
 
 // ============================================================
@@ -339,45 +631,28 @@ function formatBallState(balls: Ball[]): string {
 }
 
 function buildSystemPrompt(): string {
-  return `你是斯诺克AI教练。严格遵守WPBSA规则。
+  return `You are a snooker shot selector. Return exactly one valid JSON object and no markdown.
 
-核心规则：
-- 白球是唯一可击打的球
-- 红球阶段：必须先碰红球。进球红球后选彩球进攻，彩球会放回原位
-- 彩球阶段：按顺序黄→绿→棕→蓝→粉→黑进球
-- 开球必须先碰红球
-- 犯规罚分给对手（最低4分，最高7分）
-
-你的职责是选择目标球、策略和力度。角度由物理引擎精确计算。
-只输出JSON，不要有任何其他文字。
-
-输出格式：
+Required JSON schema:
 {
-  "targetBallId": 目标球id,
-  "power": 力度(0.1到1.0),
-  "strategy": "attack"或"safety"或"snooker",
-  "reasoning": "理由(15字内)"
+  "targetBallId": 2,
+  "power": 0.45,
+  "spinX": 0,
+  "spinY": 0,
+  "strategy": "attack",
+  "reasoning": "中文简短分析"
 }
 
-力度指南：
-- 0.2-0.3: 轻推（短距离精准走位）
-- 0.4-0.5: 中力（标准进攻）
-- 0.6-0.7: 中大力（长距离进攻、开球散堆）
-- 0.8-1.0: 大力（强力开球、大力防守）
-- 进攻时根据白球到目标球的距离选力度
-- 防守时可以用较大力度让白球走到安全区域
-- 开球时用0.7-0.9的力度散开红球堆
-
-策略选择指南：
-- attack: 有进球机会（目标球靠近袋口），进攻得分
-- safety: 没有好机会，打到目标球后白球留在安全位置
-- snooker: 故意让白球藏在非目标球后面，给对手制造困难
-
-选球原则：
-- 进攻时优先选靠近袋口的球
-- 进球红球后优先选黑球（7分）或粉球（6分）
-- 防守时选最远的球或能让白球回到安全区域的球
-`;
+Rules:
+- targetBallId must be an integer from the legal target ids only. Do not include color names.
+- power must be a number from 0.15 to 1.0.
+- spinX must be a number from -1 to 1. Negative means left side, positive means right side.
+- spinY must be a number from -1 to 1. Negative means back/draw, positive means top/follow.
+- strategy must be exactly one of: "attack", "safety", "snooker".
+- Aggressive style: choose "attack" whenever any legal target has 可进袋线路 greater than 0.
+- Choose "safety" or "snooker" only when every legal target has 可进袋线路0条 or is blocked.
+- Prefer a harder pot over safety when the target is legal and has a clear pot line.
+- The physics engine will calculate the exact aim angle. You choose target, strategy, power, and spin only.`;
 }
 
 function buildUserPrompt(state: GameState): string {
@@ -396,7 +671,12 @@ function buildUserPrompt(state: GameState): string {
       const np = nearestPocket(t);
       const distToPocket = Math.round(np.dist);
       const distToCue = Math.round(distanceBetween(cueBall.pos, t.pos));
-      return `#${t.id}(${t.color}) 距袋口${distToPocket}mm 距白球${distToCue}mm`;
+      const contact = findContactAngle(state, t);
+      const potCount = getPotLineCount(state, t);
+      const contactStatus = contact
+        ? contact.blocked ? '薄边可第一碰撞' : '中心可第一碰撞'
+        : '被挡，不能直接选';
+      return `#${t.id}(${t.color}) ${contactStatus} 可进袋线路${potCount}条 距袋口${distToPocket}mm 距白球${distToCue}mm`;
     });
     targetInfo = targetDetails.join('\n');
   }
@@ -411,16 +691,16 @@ function buildUserPrompt(state: GameState): string {
     }).join(' | ');
   }
 
-  return `你是${current.name}，得分${current.score}，对手${opponent.score}。
-阶段: ${state.phase === 'break_off' ? '开球' : state.phase === 'reds_phase' ? '红球' : '彩球'}
-台面: ${formatBallState(state.balls)}
-合法目标: ${available.description}
-各目标详情:
+  return `Current player: ${current.name}, score ${current.score}, opponent ${opponent.score}.
+Phase: ${state.phase}
+Table: ${formatBallState(state.balls)}
+Legal target rule: ${available.description}
+Legal target details:
 ${targetInfo}
-距离参考: ${distInfo}
-历史: ${formatShotHistory(state.shotHistory, [state.players[0].name, state.players[1].name])}
+Distance reference: ${distInfo}
+Recent history: ${formatShotHistory(state.shotHistory, [state.players[0].name, state.players[1].name])}
 
-请选目标球、力度和策略（严格JSON）：`;
+Return valid JSON only. Aggressive style: if any legal target has 可进袋线路 > 0, choose attack and select one of those targets.`;
 }
 
 function getAvailableTargets(state: GameState): { description: string; ballIds: number[] } {
@@ -476,50 +756,60 @@ export async function getAIMoveDecision(state: GameState): Promise<LLMDecision> 
     return getFallbackDecision(state);
   }
 
+  const directContact = findContactAngle(state, targetBall);
+  const forcedAttack = strategy.strategy !== 'attack' && getPotLineCount(state, targetBall) > 0;
+
   // Step 3: Calculate precise angle via physics, use LLM's power
-  if (strategy.strategy === 'attack') {
-    const shot = calculateBestShot(state, targetBall, strategy.power);
+  if (strategy.strategy === 'attack' || forcedAttack) {
+    const shot = calculateBestShot(state, targetBall, strategy.power, strategy.spinX, strategy.spinY);
     if (shot) {
+      const detailPrefix = forcedAttack
+        ? `agent选择${describeStrategy(strategy.strategy)}，但当前目标有可进袋线路，进攻风格强制转进攻。`
+        : '';
       return {
         targetBallId: strategy.targetBallId,
         aimAngle: shot.angle,
         power: shot.power,
-        spinX: 0,
-        spinY: -0.05,
+        spinX: strategy.spinX,
+        spinY: strategy.spinY,
         strategy: 'attack',
-        reasoning: strategy.reasoning + ` → 袋口${shot.pocketIndex}`,
+        reasoning: formatDecisionAnalysis(strategy, targetBall, 'attack', `${detailPrefix}进攻袋口${shot.pocketIndex}，ghost-ball线路和目标球进袋路线均无遮挡。`),
       };
     }
     // No pot possible → find a valid contact angle, use as safety
-    const { angle: safeAngle } = findContactAngle(state, targetBall);
+    if (!directContact) {
+      return getFallbackDecision(state);
+    }
     return {
       targetBallId: strategy.targetBallId,
-      aimAngle: safeAngle,
+      aimAngle: directContact.angle,
       power: Math.max(0.3, strategy.power * 0.8),
-      spinX: 0,
-      spinY: 0,
+      spinX: strategy.spinX,
+      spinY: strategy.spinY,
       strategy: 'safety',
-      reasoning: '无法进球，转防守',
+      reasoning: formatDecisionAnalysis(strategy, targetBall, 'safety', '未找到可验证进球袋口，改为先合法碰目标球并控制母球。'),
     };
   }
 
   // Safety or snooker: find a valid contact angle avoiding obstacles
-  const { angle: safetyAngle } = findContactAngle(state, targetBall);
+  if (!directContact) {
+    return getFallbackDecision(state);
+  }
   return {
     targetBallId: strategy.targetBallId,
-    aimAngle: safetyAngle,
+    aimAngle: directContact.angle,
     power: strategy.power,
-    spinX: 0,
-    spinY: 0,
+    spinX: strategy.spinX,
+    spinY: strategy.spinY,
     strategy: strategy.strategy,
-    reasoning: strategy.reasoning,
+    reasoning: formatDecisionAnalysis(strategy, targetBall, strategy.strategy, '按agent选择执行防守/做球，物理引擎自动取合法第一碰撞角度。'),
   };
 }
 
 /** Get LLM strategy choice only (no angle/power) */
 async function getLLMStrategy(state: GameState): Promise<LLMStrategyChoice> {
   if (!API_KEY) {
-    return getFallbackStrategy(state);
+    return getFallbackStrategy(state, '未配置 VITE_AI_API_KEY');
   }
 
   const systemPrompt = buildSystemPrompt();
@@ -540,85 +830,105 @@ async function getLLMStrategy(state: GameState): Promise<LLMStrategyChoice> {
       body: JSON.stringify({
         model: MODEL,
         messages,
-        temperature: 0.7,
-        max_tokens: 300,
+        temperature: 0.35,
+        max_tokens: 900,
+        response_format: { type: 'json_object' },
       }),
     });
 
     if (!response.ok) {
       console.error('LLM API error:', response.status);
-      return getFallbackStrategy(state);
+      return getFallbackStrategy(state, `LLM API错误 ${response.status}`);
     }
 
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || '';
 
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
+    const parsed = parseLLMJson(content);
+    if (!parsed) {
       console.error('Failed to parse LLM JSON:', content);
-      return getFallbackStrategy(state);
+      return getFallbackStrategy(state, 'LLM响应不是JSON');
     }
 
-    const parsed = JSON.parse(jsonMatch[0]);
-
-    if (typeof parsed.targetBallId !== 'number') {
-      return getFallbackStrategy(state);
+    const targetBallId = parseTargetBallId(parsed.targetBallId);
+    if (targetBallId === null) {
+      return getFallbackStrategy(state, 'LLM未返回数字targetBallId');
     }
 
     // Validate target is legal
     const available = getAvailableTargets(state);
-    if (!available.ballIds.includes(parsed.targetBallId)) {
-      console.warn(`LLM chose illegal target #${parsed.targetBallId}, using fallback`);
-      return getFallbackStrategy(state);
+    if (!available.ballIds.includes(targetBallId)) {
+      console.warn(`LLM chose illegal target #${targetBallId}, using fallback`);
+      return getFallbackStrategy(state, `LLM选择非法目标#${targetBallId}`);
+    }
+
+    const chosenTarget = state.balls.find(b => b.id === targetBallId && !b.pocketed);
+    if (chosenTarget && findContactAngle(state, chosenTarget) === null) {
+      console.warn(`LLM chose blocked target #${targetBallId}, using fallback`);
+      return getFallbackStrategy(state, `LLM选择被遮挡目标#${targetBallId}`);
     }
 
     return {
-      targetBallId: Math.round(parsed.targetBallId),
+      targetBallId,
       power: typeof parsed.power === 'number' ? Math.max(0.15, Math.min(1.0, parsed.power)) : 0.5,
-      strategy: parsed.strategy === 'safety' || parsed.strategy === 'snooker'
-        ? parsed.strategy : 'attack',
-      reasoning: parsed.reasoning || '',
+      spinX: typeof parsed.spinX === 'number' ? clampUnit(parsed.spinX) : 0,
+      spinY: typeof parsed.spinY === 'number' ? clampUnit(parsed.spinY) : 0,
+      strategy: normalizeStrategy(parsed.strategy),
+      reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : '',
+      source: 'llm',
     };
   } catch (err) {
     console.error('LLM call failed:', err);
-    return getFallbackStrategy(state);
+    return getFallbackStrategy(state, `LLM调用失败: ${err instanceof Error ? err.message : '未知错误'}`);
   }
 }
 
-function getFallbackStrategy(state: GameState): LLMStrategyChoice {
+function getFallbackStrategy(state: GameState, fallbackReason = '本地兜底策略'): LLMStrategyChoice {
   const available = getAvailableTargets(state);
   const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
   if (!cueBall) {
-    return { targetBallId: available.ballIds[0] || 0, power: 0.5, strategy: 'attack', reasoning: '' };
+    return { targetBallId: available.ballIds[0] || 0, power: 0.5, spinX: 0, spinY: 0, strategy: 'attack', reasoning: `${fallbackReason}；没有找到白球，使用兜底目标。`, source: 'fallback' };
   }
 
-  const targets = state.balls.filter(b =>
+  const legalTargets = state.balls.filter(b =>
     available.ballIds.includes(b.id) && !b.pocketed
   );
+  const targets = getDirectlyPlayableTargetBalls(state);
 
+  if (legalTargets.length === 0) {
+    return { targetBallId: available.ballIds[0] || 0, power: 0.4, spinX: 0, spinY: 0, strategy: 'safety', reasoning: `${fallbackReason}；当前没有可用合法目标。`, source: 'fallback' };
+  }
   if (targets.length === 0) {
-    return { targetBallId: available.ballIds[0] || 0, power: 0.4, strategy: 'safety', reasoning: '无目标' };
+    const spin = chooseFallbackSpin('safety', cueBall, legalTargets[0]);
+    return { targetBallId: legalTargets[0].id, power: 0.7, ...spin, strategy: 'safety', reasoning: `${fallbackReason}；所有合法目标被挡，搜索解斯诺克线路。`, source: 'fallback' };
   }
 
-  // Pick the target closest to any pocket (best pot chance)
+  // Aggressive fallback: if any legal target has a verified pot line, attack it.
   let bestTarget = targets[0];
+  let bestPotCount = -1;
   let bestPocketDist = Infinity;
   for (const t of targets) {
+    const potCount = getPotLineCount(state, t);
     const np = nearestPocket(t);
-    if (np.dist < bestPocketDist) {
+    if (potCount > bestPotCount || (potCount === bestPotCount && np.dist < bestPocketDist)) {
+      bestPotCount = potCount;
       bestPocketDist = np.dist;
       bestTarget = t;
     }
   }
 
-  // If close to pocket, attack; otherwise safety
-  const nearPocket = bestPocketDist < 300;
-  const dist = distanceBetween(cueBall.pos, bestTarget.pos);
+  const hasPotLine = bestPotCount > 0;
+  const strategy = hasPotLine ? 'attack' : 'safety';
+  const spin = chooseFallbackSpin(strategy, cueBall, bestTarget);
   return {
     targetBallId: bestTarget.id,
-    power: nearPocket ? 0.45 : 0.55,
-    strategy: nearPocket ? 'attack' : 'safety',
-    reasoning: nearPocket ? `${bestTarget.color}近袋` : '防守',
+    power: hasPotLine ? Math.max(0.42, distanceToPower(distanceBetween(cueBall.pos, bestTarget.pos))) : 0.55,
+    ...spin,
+    strategy,
+    reasoning: hasPotLine
+      ? `${fallbackReason}；${bestTarget.color}#${bestTarget.id} 有${bestPotCount}条可验证进球线路，进攻风格优先进攻。`
+      : `${fallbackReason}；没有可验证进球线路，才转防守。`,
+    source: 'fallback',
   };
 }
 
@@ -628,30 +938,45 @@ export function getFallbackDecision(state: GameState): LLMDecision {
   const targetBall = state.balls.find(b => b.id === strategy.targetBallId && !b.pocketed);
 
   if (targetBall && strategy.strategy === 'attack') {
-    const shot = calculateBestShot(state, targetBall, strategy.power);
+    const shot = calculateBestShot(state, targetBall, strategy.power, strategy.spinX, strategy.spinY);
     if (shot) {
       return {
         targetBallId: strategy.targetBallId,
         aimAngle: shot.angle,
         power: shot.power,
-        spinX: 0,
-        spinY: 0,
+        spinX: strategy.spinX,
+        spinY: strategy.spinY,
         strategy: 'attack',
-        reasoning: strategy.reasoning,
+        reasoning: formatDecisionAnalysis(strategy, targetBall, 'attack', 'fallback进攻线路模拟通过。'),
       };
     }
   }
 
   if (targetBall) {
     const safety = calculateSafetyShot(state, targetBall, strategy.power);
+    if (safety) {
+      return {
+        targetBallId: strategy.targetBallId,
+        aimAngle: safety.angle,
+        power: safety.power,
+        spinX: strategy.spinX,
+        spinY: strategy.spinY,
+        strategy: 'safety',
+        reasoning: formatDecisionAnalysis(strategy, targetBall, 'safety', 'fallback选择合法第一碰撞防守角度。'),
+      };
+    }
+  }
+
+  const escape = findAnyLegalContactShot(state, strategy.power);
+  if (escape) {
     return {
-      targetBallId: strategy.targetBallId,
-      aimAngle: safety.angle,
-      power: safety.power,
-      spinX: 0,
-      spinY: 0,
+      targetBallId: escape.targetBallId,
+      aimAngle: escape.angle,
+      power: escape.power,
+      spinX: strategy.spinX,
+      spinY: strategy.spinY,
       strategy: 'safety',
-      reasoning: strategy.reasoning,
+      reasoning: `[Fallback] 解斯诺克 target#${escape.targetBallId} power=${escape.power.toFixed(2)} 杆法=${describeSpin(strategy.spinX, strategy.spinY)}。所有直接线路受阻，搜索带库后第一碰撞合法目标。`,
     };
   }
 

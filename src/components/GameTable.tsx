@@ -35,10 +35,6 @@ export function GameTable({ balls, aimLine, playerName }: GameTableProps) {
 
   return (
     <div style={styles.container}>
-      <div style={styles.label}>
-        <span style={styles.dot} />
-        台面视图
-      </div>
       <canvas
         ref={canvasRef}
         style={styles.canvas}
@@ -55,25 +51,6 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     boxShadow: '0 8px 40px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3)',
     border: '2px solid rgba(255,255,255,0.08)',
-  },
-  label: {
-    position: 'absolute',
-    top: '8px',
-    left: '12px',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    fontSize: '11px',
-    color: 'rgba(255,255,255,0.5)',
-    zIndex: 10,
-    fontFamily: "'Segoe UI', sans-serif",
-    letterSpacing: '0.5px',
-  },
-  dot: {
-    width: '6px',
-    height: '6px',
-    borderRadius: '50%',
-    background: '#64ffda',
   },
   canvas: {
     display: 'block',

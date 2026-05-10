@@ -7,13 +7,24 @@
 
 import type { Ball, BallColor, Vec2 } from '../types';
 import {
-  TABLE_LENGTH, TABLE_WIDTH, BALL_RADIUS, CUSHION_WIDTH,
-  POCKET_POSITIONS, POCKET_RADII,
+  TABLE_LENGTH, TABLE_WIDTH, BALL_RADIUS,
   BAULK_LINE_X, CENTER_Y, D_ZONE_RADIUS,
 } from '../engine/constants';
 
 // Scale: pixels per mm. Target ~950px canvas width for the 3569mm table
 const SCALE = 0.26;
+
+// Geometry copied from Snooker_table_drawing_2.svg. The SVG is drawn in
+// ball-radius units, so multiplying by BALL_RADIUS maps it 1:1 to millimetres.
+const SVG_UNIT_MM = BALL_RADIUS;
+const SVG_OUTER_X = -37.867;
+const SVG_OUTER_Y = -4;
+const SVG_OUTER_WIDTH = 75.733;
+const SVG_OUTER_HEIGHT = 143.962;
+const TABLE_OFFSET_MM = 4 * SVG_UNIT_MM;
+
+type SvgPoint = [number, number];
+type SvgTransform = (point: SvgPoint) => SvgPoint;
 
 const BALL_COLORS: Record<BallColor, string> = {
   white: '#FFFFFF',
@@ -60,9 +71,8 @@ export class TableRenderer {
     if (!ctx) throw new Error('Cannot get 2D context');
     this.ctx = ctx;
 
-    const padding = CUSHION_WIDTH * SCALE * 2;
-    this.width = toPixel(TABLE_LENGTH) + padding * 2;
-    this.height = toPixel(TABLE_WIDTH) + padding * 2;
+    this.width = toPixel(SVG_OUTER_HEIGHT * SVG_UNIT_MM);
+    this.height = toPixel(SVG_OUTER_WIDTH * SVG_UNIT_MM);
 
     canvas.width = this.width;
     canvas.height = this.height;
@@ -70,26 +80,17 @@ export class TableRenderer {
 
   render(state: RenderState): void {
     const ctx = this.ctx;
-    const pad = CUSHION_WIDTH * SCALE;
+    const pad = toPixel(TABLE_OFFSET_MM);
 
     ctx.clearRect(0, 0, this.width, this.height);
 
-    // Outer frame (dark wood)
-    ctx.fillStyle = '#2A1506';
-    ctx.fillRect(0, 0, this.width, this.height);
-
-    // Cushion area
-    this.drawCushions();
-
-    // Playing surface (green baize)
-    ctx.fillStyle = '#0A6E3A';
-    ctx.fillRect(pad, pad, toPixel(TABLE_LENGTH), toPixel(TABLE_WIDTH));
+    this.drawTableBody();
 
     // Draw markings
-    this.drawMarkings(pad);
+    this.drawMarkings();
 
     // Draw pockets
-    this.drawPockets(pad);
+    this.drawPockets();
 
     // Aim line
     if (state.aimLine) {
@@ -100,28 +101,22 @@ export class TableRenderer {
     this.drawBalls(state.balls, pad);
   }
 
-  private drawCushions(): void {
+  private drawTableBody(): void {
     const ctx = this.ctx;
-    const cw = CUSHION_WIDTH * SCALE;
 
-    ctx.fillStyle = '#5C3317';
-    // Top cushion (x=0 side)
-    ctx.fillRect(0, 0, cw, this.height);
-    // Bottom/baulk cushion (x=TABLE_LENGTH side)
-    ctx.fillRect(this.width - cw, 0, cw, this.height);
-    // Left cushion (y=0 side)
-    ctx.fillRect(0, 0, this.width, cw);
-    // Right cushion (y=TABLE_WIDTH side)
-    ctx.fillRect(0, this.height - cw, this.width, cw);
+    ctx.fillStyle = '#4A2106';
+    this.drawSvgRoundedRect(-37.867, -4, 75.733, 143.962, 4);
 
-    // Inner edge
-    ctx.strokeStyle = '#8B5E3C';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(cw, cw, toPixel(TABLE_LENGTH), toPixel(TABLE_WIDTH));
+    ctx.fillStyle = 'darkgreen';
+    this.drawSvgRect(-35.667, -1.8, 71.333, 139.562);
+
+    ctx.fillStyle = 'forestgreen';
+    this.drawSvgRect(-33.867, 0, 67.733, 135.962);
   }
 
-  private drawMarkings(pad: number): void {
+  private drawMarkings(): void {
     const ctx = this.ctx;
+    const pad = toPixel(TABLE_OFFSET_MM);
 
     // Baulk line (vertical line parallel to top cushion, 737mm from baulk end)
     const baulkPx = pad + toPixel(BAULK_LINE_X);
@@ -142,14 +137,6 @@ export class TableRenderer {
     ctx.arc(baulkPx, centerPx, toPixel(D_ZONE_RADIUS), -Math.PI / 2, Math.PI / 2, false);
     ctx.stroke();
 
-    // Centre line (horizontal through blue spot)
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(pad, centerPx);
-    ctx.lineTo(pad + toPixel(TABLE_LENGTH), centerPx);
-    ctx.stroke();
-
     // Spot markers
     const spots: [number, number][] = [
       [324, CENTER_Y],             // Black
@@ -168,22 +155,78 @@ export class TableRenderer {
     }
   }
 
-  private drawPockets(pad: number): void {
+  private drawPockets(): void {
     const ctx = this.ctx;
 
-    for (let i = 0; i < POCKET_POSITIONS.length; i++) {
-      const [px, py] = POCKET_POSITIONS[i];
-      const radius = POCKET_RADII[i];
+    const cornerTransforms: SvgTransform[] = [
+      point => point,
+      ([x, y]) => [-x, 135.962 - y],
+      ([x, y]) => [y - 33.867, 102.095 - x],
+      ([x, y]) => [33.867 - y, x + 33.867],
+    ];
 
-      ctx.fillStyle = '#0A0A0A';
-      ctx.beginPath();
-      ctx.arc(pad + toPixel(px), pad + toPixel(py), toPixel(radius), 0, Math.PI * 2);
-      ctx.fill();
+    for (const transform of cornerTransforms) {
+      ctx.fillStyle = 'forestgreen';
+      this.drawSvgPolygon([
+        [-33.867, 3],
+        [-30.867, 0],
+        [-33.867, -2],
+        [-35.867, 0],
+      ], transform);
 
-      ctx.strokeStyle = '#2A1506';
-      ctx.lineWidth = 2;
-      ctx.stroke();
+      ctx.fillStyle = 'gold';
+      this.drawSvgPolygon([
+        [-33.867, 0],
+        [-33.867, -4],
+        [-35.867, -4],
+        [-35.867, -2],
+        [-37.867, -2],
+        [-37.867, -4],
+        [-37.867, 0],
+      ], transform);
+
+      this.drawSvgPolygon([
+        [-37.867, -4],
+        [-33.867, -4],
+        [-33.867, 0],
+        [-37.867, 0],
+      ], transform);
+
+      ctx.fillStyle = '#050505';
+      this.drawSvgCircle(-34.567, -0.7, 1.55, transform);
     }
+
+    ctx.fillStyle = 'gold';
+    this.drawSvgPolygon([
+      [-37.867, 66.081],
+      [-37.867, 69.881],
+      [-34.067, 69.881],
+      [-34.067, 66.081],
+    ]);
+    this.drawSvgPolygon([
+      [37.867, 66.081],
+      [37.867, 69.881],
+      [34.067, 69.881],
+      [34.067, 66.081],
+    ]);
+
+    ctx.fillStyle = 'forestgreen';
+    this.drawSvgPolygon([
+      [-32.867, 63.981],
+      [-32.867, 71.981],
+      [-35.667, 69.481],
+      [-35.667, 66.481],
+    ]);
+    this.drawSvgPolygon([
+      [32.867, 63.981],
+      [32.867, 71.981],
+      [35.667, 69.481],
+      [35.667, 66.481],
+    ]);
+
+    ctx.fillStyle = '#050505';
+    this.drawSvgCircle(-35.567, 67.981, 1.55);
+    this.drawSvgCircle(35.567, 67.981, 1.55);
   }
 
   private drawBalls(balls: Ball[], pad: number): void {
@@ -241,6 +284,81 @@ export class TableRenderer {
         ctx.fill();
       }
     }
+  }
+
+  private svgToCanvas([x, y]: SvgPoint): SvgPoint {
+    return [
+      toPixel((y - SVG_OUTER_Y) * SVG_UNIT_MM),
+      toPixel((x - SVG_OUTER_X) * SVG_UNIT_MM),
+    ];
+  }
+
+  private drawSvgRect(x: number, y: number, width: number, height: number): void {
+    const ctx = this.ctx;
+    const [canvasX, canvasY] = this.svgToCanvas([x, y]);
+    ctx.fillRect(canvasX, canvasY, toPixel(height * SVG_UNIT_MM), toPixel(width * SVG_UNIT_MM));
+  }
+
+  private drawSvgRoundedRect(
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    radius: number,
+  ): void {
+    const ctx = this.ctx;
+    const [canvasX, canvasY] = this.svgToCanvas([x, y]);
+    const canvasWidth = toPixel(height * SVG_UNIT_MM);
+    const canvasHeight = toPixel(width * SVG_UNIT_MM);
+    const canvasRadius = toPixel(radius * SVG_UNIT_MM);
+
+    ctx.beginPath();
+    ctx.moveTo(canvasX + canvasRadius, canvasY);
+    ctx.lineTo(canvasX + canvasWidth - canvasRadius, canvasY);
+    ctx.quadraticCurveTo(canvasX + canvasWidth, canvasY, canvasX + canvasWidth, canvasY + canvasRadius);
+    ctx.lineTo(canvasX + canvasWidth, canvasY + canvasHeight - canvasRadius);
+    ctx.quadraticCurveTo(
+      canvasX + canvasWidth,
+      canvasY + canvasHeight,
+      canvasX + canvasWidth - canvasRadius,
+      canvasY + canvasHeight,
+    );
+    ctx.lineTo(canvasX + canvasRadius, canvasY + canvasHeight);
+    ctx.quadraticCurveTo(canvasX, canvasY + canvasHeight, canvasX, canvasY + canvasHeight - canvasRadius);
+    ctx.lineTo(canvasX, canvasY + canvasRadius);
+    ctx.quadraticCurveTo(canvasX, canvasY, canvasX + canvasRadius, canvasY);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  private drawSvgPolygon(points: SvgPoint[], transform: SvgTransform = point => point): void {
+    const ctx = this.ctx;
+    const [firstX, firstY] = this.svgToCanvas(transform(points[0]));
+
+    ctx.beginPath();
+    ctx.moveTo(firstX, firstY);
+
+    for (const point of points.slice(1)) {
+      const [x, y] = this.svgToCanvas(transform(point));
+      ctx.lineTo(x, y);
+    }
+
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  private drawSvgCircle(
+    cx: number,
+    cy: number,
+    radius: number,
+    transform: SvgTransform = point => point,
+  ): void {
+    const ctx = this.ctx;
+    const [x, y] = this.svgToCanvas(transform([cx, cy]));
+
+    ctx.beginPath();
+    ctx.arc(x, y, toPixel(radius * SVG_UNIT_MM), 0, Math.PI * 2);
+    ctx.fill();
   }
 
   private drawAimLine(line: { from: Vec2; to: Vec2 }, pad: number): void {

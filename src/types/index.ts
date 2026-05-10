@@ -14,6 +14,10 @@ export interface Ball {
   color: BallColor;
   pos: Vec2;
   vel: Vec2;
+  /** Horizontal cue spin / side in [-1, 1]. Positive means right side from shot direction. */
+  spinX?: number;
+  /** Vertical cue spin in [-1, 1]. Positive means top/follow, negative means back/draw. */
+  spinY?: number;
   radius: number;
   pocketed: boolean;
   /** True for reds that have already been potted and re-spotted (none in standard rules) */
@@ -38,7 +42,7 @@ export interface ShotParams {
   angle: number;
   /** Power 0-1 (fraction of max cue speed) */
   power: number;
-  /** Spin: -1 to 1 horizontal (english), -1 to 1 vertical (top/back spin) */
+  /** Spin: -1 to 1 horizontal (left/right side), -1 to 1 vertical (back/top spin) */
   spinX: number;
   spinY: number;
   /** Target ball id the LLM is aiming at */
@@ -136,7 +140,9 @@ export interface LLMDecision {
   targetBallId: number;
   aimAngle: number;
   power: number;
+  /** Horizontal cue strike: -1 left side, 0 centre, 1 right side. */
   spinX: number;
+  /** Vertical cue strike: -1 back/draw, 0 stun, 1 top/follow. */
   spinY: number;
   strategy: 'attack' | 'safety' | 'snooker';
   reasoning: string;

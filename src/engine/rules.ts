@@ -49,6 +49,10 @@ export function getRequiredFirstContact(state: GameState): { required: BallColor
       }
       return { required: ['red'], description: '必须先碰红球' };
     }
+
+    if (wasColorAfterRedShot(state)) {
+      return { required: COLORS_ORDER, description: '最后一颗红球后必须先碰彩球' };
+    }
   }
 
   if (state.phase === 'color_after_red') {
@@ -65,6 +69,31 @@ export function getRequiredFirstContact(state: GameState): { required: BallColor
   return { required: ['red'], description: '默认：必须先碰红球' };
 }
 
+function getTargetBall(state: GameState, shotParams: ShotParams): Ball | undefined {
+  return state.balls.find(b => b.id === shotParams.targetBallId && !b.pocketed);
+}
+
+function getBallOnPenaltyValue(state: GameState, shotParams: ShotParams): number {
+  const required = getRequiredFirstContact(state);
+  const targetBall = getTargetBall(state, shotParams);
+
+  if (targetBall && required.required.includes(targetBall.color)) {
+    return BALL_VALUES[targetBall.color] || MIN_FOUL_POINTS;
+  }
+
+  if (required.required.length === 1) {
+    return BALL_VALUES[required.required[0]] || MIN_FOUL_POINTS;
+  }
+
+  return MIN_FOUL_POINTS;
+}
+
+function wasColorAfterRedShot(state: GameState): boolean {
+  const lastShot = state.shotHistory[state.shotHistory.length - 1];
+  return state.phase === 'reds_phase' &&
+    Boolean(lastShot?.result.pottedBalls.some(b => b.color === 'red'));
+}
+
 /** Evaluate a shot result and apply rules */
 export function evaluateShot(
   state: GameState,
@@ -79,30 +108,36 @@ export function evaluateShot(
 
   // 1. Cue ball potted
   if (simResult.cueBallPotted) {
+    const penalty = Math.max(MIN_FOUL_POINTS, getBallOnPenaltyValue(state, shotParams));
     fouls.push({
       type: 'cue_ball_potted',
-      points: Math.max(MIN_FOUL_POINTS, BALL_VALUES.black),
-      description: '主球落袋',
+      points: penalty,
+      description: `主球落袋，罚${penalty}分`,
     });
   }
 
   // 2. No ball contacted
   if (simResult.firstContactBallId === null) {
+    const penalty = Math.max(MIN_FOUL_POINTS, getBallOnPenaltyValue(state, shotParams));
     fouls.push({
       type: 'no_ball_contact',
-      points: Math.max(MIN_FOUL_POINTS, BALL_VALUES.black),
-      description: '主球未碰到任何球',
+      points: penalty,
+      description: `主球未碰到任何球，罚${penalty}分`,
     });
   } else {
     // 3. Wrong ball first contact
     const required = getRequiredFirstContact(state);
     const firstBall = state.balls.find(b => b.id === simResult.firstContactBallId);
     if (firstBall && !required.required.includes(firstBall.color)) {
-      const foulPoints = Math.max(MIN_FOUL_POINTS, BALL_VALUES[firstBall.color as BallColor] || 4);
+      const foulPoints = Math.max(
+        MIN_FOUL_POINTS,
+        getBallOnPenaltyValue(state, shotParams),
+        BALL_VALUES[firstBall.color as BallColor] || 0,
+      );
       fouls.push({
         type: 'wrong_ball_first_contact',
-        points: Math.max(foulPoints, MIN_FOUL_POINTS),
-        description: `先碰了${firstBall.color}球，应该先碰${required.description}`,
+        points: foulPoints,
+        description: `先碰了${firstBall.color}球，应该先碰${required.description}，罚${foulPoints}分`,
       });
     }
   }
@@ -132,13 +167,14 @@ export function evaluateShot(
       // Check if this pot was legal
       if (state.phase === 'reds_phase' || state.phase === 'break_off') {
         const redsOnTable = state.balls.filter(b => b.color === 'red' && !b.pocketed).length;
-        if (redsOnTable > 0) {
-          // Can pot red or a color (but if we already potted a red this shot, only reds score)
+        const colorAfterRed = wasColorAfterRedShot(state);
+        if (redsOnTable > 0 || colorAfterRed) {
+          // In normal red play reds score; on the stroke after potting a red,
+          // the nominated colour scores and is later re-spotted.
           if (potted.color === 'red') {
             pointsScored += BALL_VALUES.red;
             pottedBalls.push(potted);
-          } else {
-            // Potting a color when reds are available - legal but only scores color value
+          } else if (colorAfterRed) {
             pointsScored += BALL_VALUES[potted.color as BallColor];
             pottedBalls.push(potted);
           }
@@ -153,12 +189,17 @@ export function evaluateShot(
           pottedBalls.push(potted);
         } else if (nextColor) {
           // Wrong color potted in colors phase
+          const penalty = Math.max(
+            BALL_VALUES[nextColor],
+            BALL_VALUES[potted.color as BallColor],
+            MIN_FOUL_POINTS,
+          );
           fouls.push({
             type: 'wrong_ball_first_contact',
-            points: Math.max(BALL_VALUES[potted.color as BallColor], MIN_FOUL_POINTS),
-            description: `应该进球${nextColor}但进了${potted.color}`,
+            points: penalty,
+            description: `应该进球${nextColor}但进了${potted.color}，罚${penalty}分`,
           });
-          foulPoints = Math.max(foulPoints, BALL_VALUES[potted.color as BallColor]);
+          foulPoints = Math.max(foulPoints, penalty);
         }
       }
     }
@@ -267,8 +308,11 @@ export function applyShotResult(
   // the stroke began).
   const redsPottedThisShot = shotResult.pottedBalls.filter(b => b.color === 'red').length;
   const redsOnTableBefore = state.balls.filter(b => b.color === 'red' && !b.pocketed).length;
-  // Re-spot if there were reds before this shot (including last red potted this shot)
-  if (redsOnTableBefore > 0) {
+  const colorAfterRed = wasColorAfterRedShot(state);
+  // Re-spot if reds were on the table before the stroke, or if this was the
+  // colour stroke following the final red. Ordered colours phase starts only
+  // after that colour has been played and any potted colour has been spotted.
+  if (redsOnTableBefore > 0 || colorAfterRed) {
     for (const potted of shotResult.pottedBalls) {
       if (potted.color !== 'red') {
         const colorBall = newState.balls.find(b => b.id === potted.id);

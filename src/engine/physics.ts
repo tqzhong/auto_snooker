@@ -15,6 +15,21 @@ import {
 
 function vec2(x: number, y: number): Vec2 { return { x, y }; }
 function vecLen(v: Vec2): number { return Math.sqrt(v.x * v.x + v.y * v.y); }
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function getSpin(ball: Ball): { x: number; y: number } {
+  return {
+    x: clamp(ball.spinX ?? 0, -1, 1),
+    y: clamp(ball.spinY ?? 0, -1, 1),
+  };
+}
+
+function setSpin(ball: Ball, spinX: number, spinY: number): void {
+  ball.spinX = clamp(spinX, -1, 1);
+  ball.spinY = clamp(spinY, -1, 1);
+}
 
 /** Check if a ball has fallen into any pocket */
 function checkPocket(ball: Ball): boolean {
@@ -32,22 +47,24 @@ function checkPocket(ball: Ball): boolean {
 }
 
 /** Resolve collision between two balls */
-function resolveBallCollision(a: Ball, b: Ball): void {
+function resolveBallCollision(a: Ball, b: Ball): boolean {
   const dx = b.pos.x - a.pos.x;
   const dy = b.pos.y - a.pos.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
   const minDist = a.radius + b.radius;
 
-  if (dist >= minDist || dist === 0) return;
+  if (dist >= minDist || dist === 0) return false;
 
   const nx = dx / dist;
   const ny = dy / dist;
+  const aVelBefore = { ...a.vel };
+  const bVelBefore = { ...b.vel };
 
   const dvx = a.vel.x - b.vel.x;
   const dvy = a.vel.y - b.vel.y;
   const dvn = dvx * nx + dvy * ny;
 
-  if (dvn <= 0) return;
+  if (dvn <= 0) return false;
 
   const impulse = dvn * BALL_RESTITUTION;
 
@@ -61,31 +78,87 @@ function resolveBallCollision(a: Ball, b: Ball): void {
   a.pos.y -= (overlap / 2) * ny;
   b.pos.x += (overlap / 2) * nx;
   b.pos.y += (overlap / 2) * ny;
+
+  applyCueBallSpinOnContact(a, b, aVelBefore, bVelBefore, nx, ny);
+
+  return true;
+}
+
+function applyCueBallSpinOnContact(
+  a: Ball,
+  b: Ball,
+  aVelBefore: Vec2,
+  bVelBefore: Vec2,
+  nx: number,
+  ny: number,
+): void {
+  const aIsCue = a.color === 'white';
+  const bIsCue = b.color === 'white';
+  if (!aIsCue && !bIsCue) return;
+
+  const cue = aIsCue ? a : b;
+  const cueVelBefore = aIsCue ? aVelBefore : bVelBefore;
+  const speedBefore = vecLen(cueVelBefore);
+  if (speedBefore < 1) return;
+
+  const normalFromCue = aIsCue ? { x: nx, y: ny } : { x: -nx, y: -ny };
+  const tangent = { x: -normalFromCue.y, y: normalFromCue.x };
+  const spin = getSpin(cue);
+
+  // Top/back spin changes the cue-ball follow/draw along the object-ball line.
+  // Side spin creates a smaller tangent separation after contact.
+  const followKick = spin.y * speedBefore * 0.36;
+  const sideKick = spin.x * speedBefore * 0.18;
+  cue.vel.x += normalFromCue.x * followKick + tangent.x * sideKick;
+  cue.vel.y += normalFromCue.y * followKick + tangent.y * sideKick;
+
+  // Collision consumes part of the stored spin while preserving enough side for cushions.
+  setSpin(cue, spin.x * 0.82, spin.y * 0.45);
 }
 
 /** Bounce ball off cushions */
+function applyCushionReflection(ball: Ball, axis: 'x' | 'y', sign: number): void {
+  const spin = getSpin(ball);
+  const normalSpeed = axis === 'x' ? Math.abs(ball.vel.x) : Math.abs(ball.vel.y);
+  const restitution = CUSHION_RESTITUTION + Math.abs(spin.x) * 0.04;
+  const sideKick = ball.color === 'white' ? spin.x * normalSpeed * 0.24 : 0;
+  const speedFactor = ball.color === 'white' ? 1 + Math.abs(spin.x) * 0.08 : 1;
+
+  if (axis === 'x') {
+    ball.vel.x = sign * normalSpeed * restitution;
+    ball.vel.y = (ball.vel.y + sideKick * sign) * speedFactor;
+  } else {
+    ball.vel.y = sign * normalSpeed * restitution;
+    ball.vel.x = (ball.vel.x - sideKick * sign) * speedFactor;
+  }
+
+  if (ball.color === 'white') {
+    setSpin(ball, spin.x * 0.68, spin.y * 0.82);
+  }
+}
+
 function handleCushionBounce(ball: Ball): void {
   const r = ball.radius;
 
   // Left cushion (y=0)
   if (ball.pos.y - r < 0) {
     ball.pos.y = r;
-    ball.vel.y = Math.abs(ball.vel.y) * CUSHION_RESTITUTION;
+    applyCushionReflection(ball, 'y', 1);
   }
   // Right cushion (y=TABLE_WIDTH)
   if (ball.pos.y + r > TABLE_WIDTH) {
     ball.pos.y = TABLE_WIDTH - r;
-    ball.vel.y = -Math.abs(ball.vel.y) * CUSHION_RESTITUTION;
+    applyCushionReflection(ball, 'y', -1);
   }
   // Top cushion (x=0)
   if (ball.pos.x - r < 0) {
     ball.pos.x = r;
-    ball.vel.x = Math.abs(ball.vel.x) * CUSHION_RESTITUTION;
+    applyCushionReflection(ball, 'x', 1);
   }
   // Bottom / Baulk cushion (x=TABLE_LENGTH)
   if (ball.pos.x + r > TABLE_LENGTH) {
     ball.pos.x = TABLE_LENGTH - r;
-    ball.vel.x = -Math.abs(ball.vel.x) * CUSHION_RESTITUTION;
+    applyCushionReflection(ball, 'x', -1);
   }
 }
 
@@ -94,13 +167,22 @@ function applyFriction(ball: Ball, dt: number): void {
   const speed = vecLen(ball.vel);
   if (speed < 0.5) {
     ball.vel = vec2(0, 0);
+    setSpin(ball, 0, 0);
     return;
   }
-  const frictionForce = FRICTION_DECELERATION * dt;
+  const spin = getSpin(ball);
+  const spinDrag = ball.color === 'white'
+    ? 1 + Math.max(0, -spin.y) * 0.18 - Math.max(0, spin.y) * 0.08
+    : 1;
+  const frictionForce = FRICTION_DECELERATION * spinDrag * dt;
   const newSpeed = Math.max(0, speed - frictionForce);
   const ratio = newSpeed / speed;
   ball.vel.x *= ratio;
   ball.vel.y *= ratio;
+
+  if (ball.color === 'white') {
+    setSpin(ball, spin.x * Math.exp(-1.4 * dt), spin.y * Math.exp(-1.8 * dt));
+  }
 }
 
 /** Check if all balls are stationary */
@@ -194,8 +276,7 @@ export function applyShot(
     Math.sin(angle) * speed,
   );
 
-  (cueBall as any)._spinX = spinX;
-  (cueBall as any)._spinY = spinY;
+  setSpin(cueBall, spinX, spinY);
 }
 
 /** Physics simulation result */
@@ -244,19 +325,13 @@ export function simulateShot(balls: Ball[]): SimulationResult {
       if (simBalls[i].pocketed) continue;
       for (let j = i + 1; j < simBalls.length; j++) {
         if (simBalls[j].pocketed) continue;
-        const beforeVel = { ...simBalls[i].vel };
-        resolveBallCollision(simBalls[i], simBalls[j]);
+        const collided = resolveBallCollision(simBalls[i], simBalls[j]);
 
         const aIsCue = simBalls[i].color === 'white';
         const bIsCue = simBalls[j].color === 'white';
-        if ((aIsCue || bIsCue) && !hasContact) {
-          const velChanged =
-            beforeVel.x !== simBalls[i].vel.x ||
-            beforeVel.y !== simBalls[i].vel.y;
-          if (velChanged) {
-            firstContactBallId = aIsCue ? simBalls[j].id : simBalls[i].id;
-            hasContact = true;
-          }
+        if (collided && (aIsCue || bIsCue) && !hasContact) {
+          firstContactBallId = aIsCue ? simBalls[j].id : simBalls[i].id;
+          hasContact = true;
         }
       }
     }
