@@ -70,7 +70,8 @@ export type FoulType =
   | 'hit_off_table'
   | 'miss'
   | 'touching_ball_violation'
-  | 'break_requirements';
+  | 'break_requirements'
+  | 'ball_not_on_pocketed'; // §11(b)(iii): ball not on pocketed
 
 export interface Foul {
   type: FoulType;

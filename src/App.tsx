@@ -44,8 +44,8 @@ export default function App() {
         return;
       }
 
-      // Frame interval: at 1x speed, show each frame for ~50ms; faster at higher speeds
-      const baseMsPerFrame = 50; // ms per animation frame at 1x
+      // Frame interval: at 1x speed, show each frame for ~25ms (~40fps); faster at higher speeds
+      const baseMsPerFrame = 25; // ms per animation frame at 1x
       const msPerFrame = baseMsPerFrame / animSpeed;
 
       let frameIndex = 0;

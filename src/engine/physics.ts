@@ -236,8 +236,8 @@ export function createInitialBalls(): Ball[] {
 
   // Color balls on their designated spots
   const colorSpots: [string, number, number][] = [
-    ['yellow', BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS],
-    ['green', BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS],
+    ['yellow', BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS],
+    ['green', BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS],
     ['brown', BAULK_LINE_X, CENTER_Y],
     ['blue', TABLE_LENGTH / 2, CENTER_Y],
     ['pink', PINK_SPOT_X, CENTER_Y],
@@ -304,7 +304,7 @@ export function simulateShot(balls: Ball[], options?: { generateFrames?: boolean
   let cushionHitsAfterContact = 0;
   let hasContact = false;
   const frames: Ball[][] = [];
-  const FRAME_INTERVAL_TICKS = Math.round(0.05 / PHYSICS_TIMESTEP);
+  const FRAME_INTERVAL_TICKS = Math.round(0.025 / PHYSICS_TIMESTEP);
   let tickCount = 0;
 
   const simBalls = balls.map(b => ({

@@ -143,8 +143,8 @@ export class TableRenderer {
       [892.25, CENTER_Y],          // Pink
       [TABLE_LENGTH / 2, CENTER_Y], // Blue
       [BAULK_LINE_X, CENTER_Y],   // Brown
-      [BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS], // Yellow
-      [BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS], // Green
+      [BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS], // Yellow (right from baulk)
+      [BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS], // Green  (left from baulk)
     ];
 
     for (const [x, y] of spots) {

@@ -44,7 +44,7 @@ const POSITIONS: TrainingPosition[] = [
     description: '彩球进球 — 黄球在点位附近',
     createBalls: () => [
       makeBall(0, 'white', 2500, CENTER_Y + 200),
-      makeBall(1, 'yellow', BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS),
+      makeBall(1, 'yellow', BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS),
     ],
   },
 
@@ -87,7 +87,7 @@ const POSITIONS: TrainingPosition[] = [
       makeBall(0, 'white', 2500, CENTER_Y),
       makeBall(1, 'red', 300, CENTER_Y + 50),
       makeBall(2, 'brown', BAULK_LINE_X, CENTER_Y),
-      makeBall(3, 'green', BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS),
+      makeBall(3, 'green', BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS),
     ],
   },
   {
@@ -145,8 +145,8 @@ const POSITIONS: TrainingPosition[] = [
       makeBall(3, 'pink', PINK_SPOT_X, CENTER_Y),
       makeBall(4, 'blue', TABLE_LENGTH / 2, CENTER_Y),
       makeBall(5, 'brown', BAULK_LINE_X, CENTER_Y),
-      makeBall(6, 'green', BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS),
-      makeBall(7, 'yellow', BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS),
+      makeBall(6, 'green', BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS),
+      makeBall(7, 'yellow', BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS),
     ],
   },
   {
@@ -161,8 +161,8 @@ const POSITIONS: TrainingPosition[] = [
       makeBall(4, 'pink', PINK_SPOT_X, CENTER_Y),
       makeBall(5, 'blue', TABLE_LENGTH / 2, CENTER_Y),
       makeBall(6, 'brown', BAULK_LINE_X, CENTER_Y),
-      makeBall(7, 'green', BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS),
-      makeBall(8, 'yellow', BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS),
+      makeBall(7, 'green', BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS),
+      makeBall(8, 'yellow', BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS),
     ],
   },
 ];

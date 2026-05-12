@@ -264,16 +264,14 @@ export function getAvailableTargets(state: GameState): { description: string; ba
   }
 
   if (state.phase === 'break_off' || state.phase === 'reds_phase') {
-    if (redsOnTable.length > 0) {
-      const lastShot = state.shotHistory[state.shotHistory.length - 1];
-      if (lastShot && lastShot.result.pottedBalls.some(b => b.color === 'red')) {
-        const colors = state.balls.filter(b => COLORS_ORDER.includes(b.color as BallColor) && !b.pocketed);
-        return { description: '必须先碰彩球', ballIds: colors.map(b => b.id) };
-      }
-      return { description: '必须先碰红球', ballIds: redsOnTable.map(b => b.id) };
-    }
+    // §3(g): Until all Reds are off the table, Red is the ball on
+    return { description: '必须先碰红球', ballIds: redsOnTable.map(b => b.id) };
+  }
+
+  if (state.phase === 'color_after_red') {
+    // §3(h)(i): After potting a red, next ball on is a colour of striker's choice
     const colors = state.balls.filter(b => COLORS_ORDER.includes(b.color as BallColor) && !b.pocketed);
-    return { description: '刚进球最后一颗红球，可以选择任意彩球进攻', ballIds: colors.map(b => b.id) };
+    return { description: '进球红球后，可选择任意彩球', ballIds: colors.map(b => b.id) };
   }
 
   if (state.phase === 'colors_phase' && state.nextColorToPot) {

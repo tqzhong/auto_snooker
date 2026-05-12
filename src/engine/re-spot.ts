@@ -8,8 +8,8 @@ import { BALL_RADIUS, TABLE_LENGTH, TABLE_WIDTH, CENTER_Y, BAULK_LINE_X, D_ZONE_
 
 /** Designated spot positions for each color ball */
 const COLOR_SPOTS: Record<string, Vec2> = {
-  yellow: { x: BAULK_LINE_X, y: CENTER_Y + D_ZONE_RADIUS },
-  green:  { x: BAULK_LINE_X, y: CENTER_Y - D_ZONE_RADIUS },
+  yellow: { x: BAULK_LINE_X, y: CENTER_Y - D_ZONE_RADIUS },
+  green:  { x: BAULK_LINE_X, y: CENTER_Y + D_ZONE_RADIUS },
   brown:  { x: BAULK_LINE_X, y: CENTER_Y },
   blue:   { x: TABLE_LENGTH / 2, y: CENTER_Y },
   pink:   { x: 892.25, y: CENTER_Y },
@@ -52,28 +52,35 @@ export function findReSpotPosition(color: BallColor, balls: Ball[]): Vec2 {
     if (spot && !isSpotOccupied(spot, balls)) return { ...spot };
   }
 
-  // 3. All spots occupied: place as close to own spot as possible
-  // WPBSA: between the spot and the nearest cushion face, along the center longitudinal line
-  return findClosestAvailableOnCenterLine(ownSpot, balls);
+  // 3. All spots occupied: place as near to own spot as possible,
+  //    between that spot and the nearest part of the Top Cushion (§7(g)).
+  // §7(h): For Pink and Black, if no space toward Top Cushion,
+  //         place on the centre longitudinal line as close to own spot as possible.
+  return findClosestAvailableOnCenterLine(color, ownSpot, balls);
 }
 
 /**
- * Find closest available position on the center longitudinal line (y = CENTER_Y)
- * between the ball's spot and the nearest cushion.
+ * §7(g): Place between the spot and the Top Cushion face along the centre line.
+ * §7(h): For Pink/Black, if no space toward Top Cushion, use any position on centre line.
  */
-function findClosestAvailableOnCenterLine(targetSpot: Vec2, balls: Ball[]): Vec2 {
+function findClosestAvailableOnCenterLine(color: BallColor, targetSpot: Vec2, balls: Ball[]): Vec2 {
   const y = CENTER_Y;
 
-  // Try positions progressively further from the spot toward both cushions
-  for (let offset = 0; offset < TABLE_LENGTH; offset += BALL_RADIUS) {
-    const candidateLeft = { x: targetSpot.x - offset, y };
-    const candidateRight = { x: targetSpot.x + offset, y };
+  // §7(g): Try positions between spot and Top Cushion (x decreasing toward 0)
+  for (let offset = BALL_RADIUS; offset < TABLE_LENGTH; offset += BALL_RADIUS) {
+    const candidate = { x: targetSpot.x - offset, y };
+    if (candidate.x < BALL_RADIUS) break;
+    if (!isSpotOccupied(candidate, balls)) return candidate;
+  }
 
-    if (candidateLeft.x >= BALL_RADIUS && !isSpotOccupied(candidateLeft, balls)) {
-      return candidateLeft;
-    }
-    if (candidateRight.x <= TABLE_LENGTH - BALL_RADIUS && !isSpotOccupied(candidateRight, balls)) {
-      return candidateRight;
+  // §7(h): For Pink and Black, if no space toward Top Cushion,
+  // place as near to own spot as possible on the centre longitudinal line
+  if (color === 'pink' || color === 'black') {
+    // Try positions beyond own spot toward Baulk (x increasing)
+    for (let offset = BALL_RADIUS; offset < TABLE_LENGTH; offset += BALL_RADIUS) {
+      const candidate = { x: targetSpot.x + offset, y };
+      if (candidate.x > TABLE_LENGTH - BALL_RADIUS) break;
+      if (!isSpotOccupied(candidate, balls)) return candidate;
     }
   }
 

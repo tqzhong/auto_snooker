@@ -45,9 +45,9 @@ export const CUSHION_WIDTH = 40;
 // Brown Spot:  middle of the Baulk-line
 //              = 3569 - 737 = 2832 mm
 // Yellow Spot: right corner of D (viewed from Baulk end)
-//              = on Baulk-line, y = CENTER_Y + 292
-// Green Spot:  left corner of D (viewed from Baulk end)
 //              = on Baulk-line, y = CENTER_Y - 292
+// Green Spot:  left corner of D (viewed from Baulk end)
+//              = on Baulk-line, y = CENTER_Y + 292
 // ============================================================
 
 export const BLACK_SPOT_X = 324;
@@ -68,8 +68,8 @@ export const BLACK_SPOT: [number, number] = [BLACK_SPOT_X, CENTER_Y];
 export const PINK_SPOT: [number, number] = [PINK_SPOT_X, CENTER_Y];
 export const BLUE_SPOT: [number, number] = [BLUE_SPOT_X, CENTER_Y];
 export const BROWN_SPOT: [number, number] = [BAULK_LINE_X, CENTER_Y];
-export const YELLOW_SPOT: [number, number] = [BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS];
-export const GREEN_SPOT: [number, number] = [BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS];
+export const YELLOW_SPOT: [number, number] = [BAULK_LINE_X, CENTER_Y - D_ZONE_RADIUS];
+export const GREEN_SPOT: [number, number] = [BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS];
 
 /** Cue ball break-off: inside D-zone, slightly right of center (viewed from baulk) */
 export const CUE_BALL_BREAK_POS: [number, number] = [BAULK_LINE_X, CENTER_Y + D_ZONE_RADIUS * 0.4];
