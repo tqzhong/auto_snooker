@@ -283,6 +283,8 @@ export function applyShot(
 export interface SimulationResult {
   pottedBalls: Ball[];
   firstContactBallId: number | null;
+  /** All object balls contacted by the cue ball on the first contact tick. */
+  firstContactBallIds: number[];
   cueBallPotted: boolean;
   cushionHitAfterContact: boolean;
   /** Balls that went off the playing surface */
@@ -299,6 +301,7 @@ export function simulateShot(balls: Ball[], options?: { generateFrames?: boolean
   const pottedBalls: Ball[] = [];
   const offTableBalls: Ball[] = [];
   let firstContactBallId: number | null = null;
+  let firstContactBallIds: number[] = [];
   let cueBallPotted = false;
   let cushionHitAfterContact = false;
   let cushionHitsAfterContact = 0;
@@ -315,7 +318,7 @@ export function simulateShot(balls: Ball[], options?: { generateFrames?: boolean
 
   const cueBall = simBalls.find(b => b.color === 'white');
   if (!cueBall) {
-    return { pottedBalls: [], firstContactBallId: null, cueBallPotted: false, cushionHitAfterContact: false, offTableBalls: [], cushionHitsAfterContact: 0, finalBalls: simBalls, frames: [] };
+    return { pottedBalls: [], firstContactBallId: null, firstContactBallIds: [], cueBallPotted: false, cushionHitAfterContact: false, offTableBalls: [], cushionHitsAfterContact: 0, finalBalls: simBalls, frames: [] };
   }
 
   const dt = PHYSICS_TIMESTEP;
@@ -323,6 +326,8 @@ export function simulateShot(balls: Ball[], options?: { generateFrames?: boolean
   const offTableMargin = -BALL_RADIUS * 2;
 
   while (!allBallsStopped(simBalls) && elapsed < MAX_SIMULATION_TIME) {
+    const firstContactsThisTick: number[] = [];
+
     for (const ball of simBalls) {
       if (ball.pocketed) continue;
       ball.pos.x += ball.vel.x * dt;
@@ -338,10 +343,15 @@ export function simulateShot(balls: Ball[], options?: { generateFrames?: boolean
         const aIsCue = simBalls[i].color === 'white';
         const bIsCue = simBalls[j].color === 'white';
         if (collided && (aIsCue || bIsCue) && !hasContact) {
-          firstContactBallId = aIsCue ? simBalls[j].id : simBalls[i].id;
-          hasContact = true;
+          firstContactsThisTick.push(aIsCue ? simBalls[j].id : simBalls[i].id);
         }
       }
+    }
+
+    if (!hasContact && firstContactsThisTick.length > 0) {
+      firstContactBallIds = Array.from(new Set(firstContactsThisTick));
+      firstContactBallId = firstContactBallIds[0];
+      hasContact = true;
     }
 
     for (const ball of simBalls) {
@@ -416,6 +426,7 @@ export function simulateShot(balls: Ball[], options?: { generateFrames?: boolean
   return {
     pottedBalls,
     firstContactBallId,
+    firstContactBallIds,
     cueBallPotted,
     cushionHitAfterContact,
     offTableBalls,

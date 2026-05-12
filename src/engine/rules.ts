@@ -8,7 +8,7 @@ import { BALL_VALUES, COLORS_ORDER, MIN_FOUL_POINTS, MAX_FOUL_POINTS } from '../
 import { BAULK_LINE_X, CENTER_Y, D_ZONE_RADIUS, BALL_RADIUS } from './constants';
 import type { SimulationResult } from './physics';
 import { distanceBetween, detectTouchingBalls, createInitialBalls } from './physics';
-import { findReSpotPosition, findBestBaulkPosition, getColorSpot } from './re-spot';
+import { findReSpotPosition, findBestBaulkPosition } from './re-spot';
 
 // ============================================================
 // Public API
@@ -35,31 +35,24 @@ export function maxPointsRemaining(balls: Ball[], phase: GamePhase): number {
 
 /** Determine what ball the current player should hit first */
 export function getRequiredFirstContact(state: GameState): { required: BallColor[]; description: string } {
-  // Free ball: player can hit any ball
   if (state.freeBall) {
-    return { required: COLORS_ORDER.concat(['red']), description: 'Free Ball — 可以击打任意球' };
+    const ballOn = getNaturalBallOnColors(state);
+    return {
+      required: ballOn,
+      description: 'Free Ball — 必须先碰提名自由球，或与目标球同时接触',
+    };
   }
 
-  if (state.phase === 'break_off') {
-    return { required: ['red'], description: '开球必须先碰到红球' };
-  }
-
-  if (state.phase === 'reds_phase') {
-    // §3(g): Until all Reds are off the table, Red is the ball on
+  const required = getNaturalBallOnColors(state);
+  if (required.length === 1 && required[0] === 'red') {
     return { required: ['red'], description: '必须先碰红球' };
   }
-
   if (state.phase === 'color_after_red') {
-    // §3(h)(i): After potting a red, next ball on is a colour of the striker's choice
     return { required: COLORS_ORDER, description: '进球红球后必须选择一个彩球' };
   }
-
-  if (state.phase === 'colors_phase') {
-    if (state.nextColorToPot) {
-      return { required: [state.nextColorToPot], description: `必须先碰${state.nextColorToPot}` };
-    }
+  if (required.length === 1) {
+    return { required, description: `必须先碰${required[0]}` };
   }
-
   return { required: ['red'], description: '默认：必须先碰红球' };
 }
 
@@ -71,12 +64,26 @@ export function evaluateShot(
 ): ShotResult {
   const fouls: Foul[] = [];
   let pointsScored = 0;
-  let foulPoints = 0;
   const pottedBalls: Ball[] = [];
+  const nominatedFreeBall = getNominatedFreeBall(state, shotParams);
+  const firstContactIds = getFirstContactIds(simResult);
+  const firstContactBalls = firstContactIds
+    .map(id => state.balls.find(b => b.id === id))
+    .filter((b): b is Ball => Boolean(b));
+  const hasLegalTouchingBall = hasTouchingBallThatIsOrCouldBeOn(state, shotParams);
 
   // --- FOUL CHECKS ---
 
-  // 1. Cue ball potted (Section 6(a))
+  if (state.cueBallInHand && !isCueBallInD(state.balls)) {
+    const penalty = Math.max(MIN_FOUL_POINTS, getBallOnPenaltyValue(state, shotParams));
+    fouls.push({
+      type: 'improper_in_hand',
+      points: penalty,
+      description: `主球未从D区内开打，罚${penalty}分`,
+    });
+  }
+
+  // 1. Cue ball potted (§3 Rule 11(a)(vii))
   if (simResult.cueBallPotted) {
     const penalty = Math.max(MIN_FOUL_POINTS, getBallOnPenaltyValue(state, shotParams));
     fouls.push({
@@ -86,8 +93,10 @@ export function evaluateShot(
     });
   }
 
-  // 2. No ball contacted (Section 10)
-  if (simResult.firstContactBallId === null) {
+  // 2. No ball contacted (§3 Rule 11(a)(vi)). A legal touching-ball
+  // position counts as the ball on already being contacted, provided it
+  // is played away without moving the touching object ball.
+  if (firstContactIds.length === 0 && !hasLegalTouchingBall) {
     const penalty = Math.max(MIN_FOUL_POINTS, getBallOnPenaltyValue(state, shotParams));
     fouls.push({
       type: 'no_ball_contact',
@@ -95,27 +104,38 @@ export function evaluateShot(
       description: `主球未碰到任何球，罚${penalty}分`,
     });
   } else {
-    // 3. Wrong ball first contact (Section 10)
-    const required = getRequiredFirstContact(state);
-    const firstBall = state.balls.find(b => b.id === simResult.firstContactBallId);
-    if (firstBall && !required.required.includes(firstBall.color)) {
-      const foulPoints = Math.max(
+    const contactFoul = checkFirstContact(state, shotParams, firstContactBalls, nominatedFreeBall);
+    if (contactFoul) fouls.push(contactFoul);
+
+    const simultaneousFoul = checkSimultaneousFirstContact(state, shotParams, firstContactBalls, nominatedFreeBall);
+    if (simultaneousFoul) fouls.push(simultaneousFoul);
+  }
+
+  // 3. Ball not on pocketed (§3 Rule 11(b)(iii))
+  for (const potted of simResult.pottedBalls) {
+    if (potted.color === 'white') continue;
+    if (!isPottedBallLegal(state, shotParams, potted, nominatedFreeBall)) {
+      const penalty = Math.max(
         MIN_FOUL_POINTS,
         getBallOnPenaltyValue(state, shotParams),
-        BALL_VALUES[firstBall.color as BallColor] || 0,
+        BALL_VALUES[potted.color],
       );
       fouls.push({
-        type: 'wrong_ball_first_contact',
-        points: foulPoints,
-        description: `先碰了${firstBall.color}球，应该先碰${required.description}，罚${foulPoints}分`,
+        type: 'ball_not_on_pocketed',
+        points: penalty,
+        description: `${potted.color}不是目标球却落袋，罚${penalty}分`,
       });
     }
   }
 
-  // 4. Ball off table (Section 5(b))
+  // 4. Ball off table (§3 Rule 11(b)(x))
   for (const offBall of simResult.offTableBalls) {
     if (offBall.color === 'white') continue; // Already handled as cue_ball_potted
-    const penalty = Math.max(MIN_FOUL_POINTS, BALL_VALUES[offBall.color as BallColor] || 0);
+    const penalty = Math.max(
+      MIN_FOUL_POINTS,
+      getBallOnPenaltyValue(state, shotParams),
+      BALL_VALUES[offBall.color],
+    );
     fouls.push({
       type: 'hit_off_table',
       points: penalty,
@@ -123,7 +143,7 @@ export function evaluateShot(
     });
   }
 
-  // 5. Touching ball violation (Section 4)
+  // 5. Touching ball violation (§3 Rule 8(b), §2 Rule 19)
   if (state.touchingBalls.length > 0) {
     const touchingViolation = checkTouchingBallViolation(state, simResult);
     if (touchingViolation) {
@@ -131,7 +151,7 @@ export function evaluateShot(
     }
   }
 
-  // 6. Miss rule (Section 14)
+  // 6. Miss rule (§3 Rule 14)
   // Only called when:
   //   (a) player failed to hit ball-on (no_ball_contact or wrong_ball_first_contact)
   //   (b) there IS a clear path to a ball-on (§14(c))
@@ -144,7 +164,7 @@ export function evaluateShot(
     // and the miss was not intentional, miss is not called
     const opponent = state.players[1 - state.currentPlayerIndex];
     const player = state.players[state.currentPlayerIndex];
-    const trailingByMoreThanRemaining = Math.abs(player.score - opponent.score) > maxPointsRemaining(state.balls, state.phase);
+    const anyPlayerNeedsPenaltyPoints = Math.abs(player.score - opponent.score) > maxPointsRemaining(state.balls, state.phase);
 
     // §14(c)/(d): Only call miss if there is a clear path to ball-on
     const hasClearPath = checkClearPathToBallOn(state, simResult);
@@ -152,7 +172,7 @@ export function evaluateShot(
     // Miss is NOT called if:
     // - trailing by more than remaining points (§14(a)(i))
     // - no clear path exists (§14(a)(ii))
-    if (!trailingByMoreThanRemaining && hasClearPath) {
+    if (!anyPlayerNeedsPenaltyPoints && hasClearPath) {
       fouls.push({
         type: 'miss',
         points: 0, // Miss itself doesn't add points, it just allows replay
@@ -164,77 +184,15 @@ export function evaluateShot(
   // --- SCORING (only if no fouls that result in penalty) ---
   const hasScoringFoul = fouls.some(f => f.points > 0);
   if (!hasScoringFoul) {
-    // Valid shot - count potted balls
-    for (const potted of simResult.pottedBalls) {
-      if (potted.color === 'white') continue;
+    const scoring = scoreLegalPots(state, shotParams, simResult.pottedBalls, nominatedFreeBall);
+    pointsScored = scoring.points;
+    pottedBalls.push(...scoring.balls);
 
-      if (state.phase === 'reds_phase' || state.phase === 'break_off') {
-        // §3(g): Red is ball on → pot reds for 1 point each
-        if (potted.color === 'red') {
-          pointsScored += BALL_VALUES.red;
-          pottedBalls.push(potted);
-        }
-      } else if (state.phase === 'color_after_red') {
-        // §3(h)(i): After potting red, colour of striker's choice is ball on
-        if (potted.color !== 'red') {
-          // §12(a)(ii): Free ball acquires the value of the ball on, not its own value
-          const ballOnValue = getBallOnValue(state);
-          pointsScored += ballOnValue;
-          pottedBalls.push(potted);
-        }
-      }
-
-      if (state.phase === 'colors_phase') {
-        const nextColor = state.nextColorToPot;
-        if (nextColor && potted.color === nextColor) {
-          pointsScored += BALL_VALUES[potted.color as BallColor];
-          pottedBalls.push(potted);
-        } else if (nextColor) {
-          // §11(b)(iii): causing a ball not on to be pocketed
-          // Penalty = value of the ball on or the ball concerned, whichever is higher
-          const penalty = Math.max(
-            BALL_VALUES[nextColor],
-            BALL_VALUES[potted.color as BallColor],
-            MIN_FOUL_POINTS,
-          );
-          fouls.push({
-            type: 'ball_not_on_pocketed',
-            points: penalty,
-            description: `应该进球${nextColor}但进了${potted.color}，罚${penalty}分`,
-          });
-          foulPoints = Math.max(foulPoints, penalty);
-        }
-      }
-    }
-  }
-
-  // 7. WPBSA Section 3(g)(i): If a player plays at a Red and simultaneously
-  //    pots a Colour, the points for the Colour do not count and the Colour is spotted.
-  //    This is a foul. (Checked regardless of other fouls — affects re-spot logic)
-  if (state.phase === 'reds_phase' || state.phase === 'break_off') {
-    // Only applies when player is playing at reds (not after potting a red)
-    // phase === 'reds_phase' or 'break_off' means Red is the ball on
-    const colorsPotted = simResult.pottedBalls.filter(b => b.color !== 'red' && b.color !== 'white');
-    const redsPotted = simResult.pottedBalls.filter(b => b.color === 'red');
-
-    if (colorsPotted.length > 0 && redsPotted.length > 0) {
-        // Section 3(g)(i): Playing at red, simultaneously potted a colour
-        // The colour points do not count, colour is spotted, AND it's a foul
-        const penalty = Math.max(
-          MIN_FOUL_POINTS,
-          ...colorsPotted.map(c => BALL_VALUES[c.color as BallColor])
-        );
-        fouls.push({
-          type: 'wrong_ball_first_contact',
-          points: penalty,
-          description: `击红球时意外带入${colorsPotted.map(c => c.color).join('、')}球，罚${penalty}分`,
-        });
-        foulPoints = Math.max(foulPoints, penalty);
-
-        // Remove the color pots from scored points
-        for (const colorBall of colorsPotted) {
-          pointsScored -= BALL_VALUES[colorBall.color as BallColor];
-        }
+    const freeBallSnookerFoul = checkFreeBallSnooker(state, shotParams, simResult, nominatedFreeBall, pointsScored);
+    if (freeBallSnookerFoul) {
+      fouls.push(freeBallSnookerFoul);
+      pointsScored = 0;
+      pottedBalls.length = 0;
     }
   }
 
@@ -242,15 +200,14 @@ export function evaluateShot(
   if (fouls.length > 0) {
     const pointFouls = fouls.filter(f => f.points > 0);
     if (pointFouls.length > 0) {
-      foulPoints = Math.max(...pointFouls.map(f => f.points));
+      const finalPenalty = Math.min(
+        MAX_FOUL_POINTS,
+        Math.max(MIN_FOUL_POINTS, ...pointFouls.map(f => f.points)),
+      );
+      for (const foul of pointFouls) foul.points = finalPenalty;
+      pointsScored = 0;
+      pottedBalls.length = 0;
     }
-    for (const potted of simResult.pottedBalls) {
-      if (potted.color !== 'white') {
-        foulPoints = Math.max(foulPoints, BALL_VALUES[potted.color as BallColor] || 0);
-      }
-    }
-    foulPoints = Math.max(foulPoints, MIN_FOUL_POINTS);
-    foulPoints = Math.min(foulPoints, MAX_FOUL_POINTS);
   }
 
   return {
@@ -283,6 +240,8 @@ export function applyShotResult(
     freeBall: false,
     freeBallNominee: null,
     missCount: state.missCount,
+    missWarningIssued: state.missWarningIssued,
+    cueBallInHand: false,
     lastFoulPosition: state.lastFoulPosition,
     touchingBalls: [],
     stalemateCount: state.stalemateCount,
@@ -302,6 +261,7 @@ export function applyShotResult(
   newState.shotHistory.push(record);
 
   const currentPlayer = newState.players[state.currentPlayerIndex];
+  const blackOnlyBefore = isBlackOnlyObjectBall(state.balls);
 
   // --- APPLY FOULS ---
   const hasScoringFoul = shotResult.fouls.some(f => f.points > 0);
@@ -321,6 +281,7 @@ export function applyShotResult(
         const baulkPos = findBestBaulkPosition(newState.balls, required.required);
         cueBall.pos = baulkPos;
         cueBall.vel = { x: 0, y: 0 };
+        newState.cueBallInHand = true;
       }
     }
 
@@ -330,54 +291,28 @@ export function applyShotResult(
       newState.lastFoulPosition = { ...cueBall.pos };
     }
 
-    // Miss rule (§14): track consecutive misses
-    // §14(d)(i): 2nd failure from original position → must be Warned
-    // §14(d)(ii): 3rd failure after Warning → frame awarded to opponent
+    // Miss rule (§3 Rule 14): track calls and warnings. A frame is only
+    // awarded after the non-offender asks for play from the original
+    // position and a Warning has actually been issued; this autonomous
+    // loop does not make that election for the player.
     const isMiss = shotResult.fouls.some(f => f.type === 'miss');
     if (isMiss) {
       newState.missCount = state.missCount + 1;
-      if (newState.missCount === 2) {
-        // §14(d)(ii): 2nd miss — warn the player
-        newState.statusMessage += ` ⚠️ Miss警告！再次Miss将判负`;
-      }
-      if (newState.missCount >= 3) {
-        // §14(d)(ii): 3rd miss after warning → frame awarded to opponent
-        newState.phase = 'game_over';
-        newState.frameScores.push([newState.players[0].score, newState.players[1].score]);
-        newState.players[opponentIndex].score = Math.max(
-          newState.players[0].score,
-          newState.players[1].score,
-        ) + 1; // Ensure opponent wins
-        newState.statusMessage = `${currentPlayer.name} 连续3次Miss（已警告），${newState.players[opponentIndex].name}赢得本局`;
-        return newState;
+      if (newState.missCount >= 2) {
+        newState.missWarningIssued = true;
+        newState.statusMessage += ` Miss警告：若从原位重打后再次失败，可判负`;
       }
     } else {
       newState.missCount = 0;
-    }
-
-    // Re-spot off-table balls
-    for (const offBall of simResult.offTableBalls) {
-      if (offBall.color === 'white') continue;
-      const ball = newState.balls.find(b => b.id === offBall.id);
-      if (ball) {
-        ball.pocketed = false;
-        const spot = findReSpotPosition(offBall.color as BallColor, newState.balls);
-        ball.pos = spot;
-        ball.vel = { x: 0, y: 0 };
-      }
-    }
-
-    // Check free ball: if cue ball is snookered after a foul
-    if (isIncomingPlayerSnookered(newState, simResult)) {
-      newState.freeBall = true;
-      newState.statusMessage += ' — Free Ball!';
+      newState.missWarningIssued = false;
     }
 
     // Switch to opponent
     newState.currentPlayerIndex = 1 - state.currentPlayerIndex;
-    if (!newState.statusMessage) {
-      newState.statusMessage = `${currentPlayer.name} 犯规: ${shotResult.fouls.filter(f => f.points > 0).map(f => f.description).join(', ')} — 对手得${foulPoints}分`;
-    }
+    const foulSummary = `${currentPlayer.name} 犯规: ${shotResult.fouls.filter(f => f.points > 0).map(f => f.description).join(', ')} — 对手得${foulPoints}分`;
+    newState.statusMessage = newState.statusMessage
+      ? `${foulSummary} ${newState.statusMessage}`
+      : foulSummary;
 
   } else {
     // --- VALID SHOT ---
@@ -398,6 +333,7 @@ export function applyShotResult(
       newState.stalemateCount = 0;
       // Reset miss count on successful play
       newState.missCount = 0;
+      newState.missWarningIssued = false;
 
       newState.statusMessage = `${currentPlayer.name} 进球! ${shotResult.pottedBalls.map(b => b.color).join(', ')} — 本杆${currentPlayer.currentBreak}分`;
     } else {
@@ -418,26 +354,11 @@ export function applyShotResult(
     }
 
     newState.missCount = 0;
+    newState.missWarningIssued = false;
   }
 
   // --- RE-SPOT COLORS ---
-  // WPBSA §7: colours are spotted while reds remain on the table,
-  // or when in color_after_red phase (last red was just potted, playing at colour)
-  const redsOnTableBefore = state.balls.filter(b => b.color === 'red' && !b.pocketed).length;
-  const needsReSpot = redsOnTableBefore > 0 || state.phase === 'color_after_red';
-  if (needsReSpot) {
-    for (const potted of shotResult.pottedBalls) {
-      if (potted.color !== 'red') {
-        const colorBall = newState.balls.find(b => b.id === potted.id);
-        if (colorBall) {
-          colorBall.pocketed = false;
-          const spot = findReSpotPosition(potted.color as BallColor, newState.balls);
-          colorBall.pos = spot;
-          colorBall.vel = { x: 0, y: 0 };
-        }
-      }
-    }
-  }
+  reSpotRequiredColors(state, newState, simResult, shotResult, hasScoringFoul);
 
   // --- PHASE TRANSITIONS ---
   // WPBSA §3(g)/(h): Phase flow
@@ -446,19 +367,17 @@ export function applyShotResult(
   //   color_after_red → potted color → reds_phase (if reds remain) or colors_phase (if no reds)
   //   reds_phase → no pot → opponent's turn, stay reds_phase
   newState.redsRemaining = newState.balls.filter(b => b.color === 'red' && !b.pocketed).length;
-  const pottedARedThisShot = shotResult.pottedBalls.some(b => b.color === 'red');
+  const nominatedFreeBall = getNominatedFreeBall(state, shotParams);
+  const pottedFreeBallAsRed = Boolean(
+    nominatedFreeBall &&
+    getNaturalBallOnColors(state).includes('red') &&
+    shotResult.pottedBalls.some(b => b.id === nominatedFreeBall.id)
+  );
+  const pottedARedThisShot = shotResult.pottedBalls.some(b => b.color === 'red') || pottedFreeBallAsRed;
   const pottedAColorThisShot = shotResult.pottedBalls.some(b => b.color !== 'red' && b.color !== 'white');
 
   if (hasScoringFoul) {
-    // Foul: phase doesn't advance — opponent plays from current state
-    // Keep phase as-is (or revert to reds_phase if was color_after_red)
-    if (state.phase === 'color_after_red') {
-      // §3 Rule 10(i)(iii): after foul in color_after_red, ball-on becomes
-      // "a colour of the striker's choice" for the opponent
-      newState.phase = 'color_after_red'; // opponent also needs to play a color
-    } else {
-      newState.phase = state.phase;
-    }
+    newState.phase = phaseForIncomingTurnAfterBreakEnds(state, newState);
   } else if (pottedARedThisShot) {
     // §3(h)(i): Red potted → next ball on is a colour of striker's choice
     newState.phase = 'color_after_red';
@@ -471,8 +390,7 @@ export function applyShotResult(
       newState.nextColorToPot = findNextColor(newState.balls);
     }
   } else if (state.phase === 'color_after_red' && !pottedAColorThisShot) {
-    // Didn't pot the color → opponent's turn, still need to play a color
-    newState.phase = 'color_after_red';
+    newState.phase = phaseForIncomingTurnAfterBreakEnds(state, newState);
   } else if (newState.redsRemaining === 0 && state.phase !== 'colors_phase' && state.phase !== 'game_over') {
     // All reds gone (last red was potted earlier) → colors phase
     newState.phase = 'colors_phase';
@@ -485,6 +403,15 @@ export function applyShotResult(
 
   if (newState.phase === 'colors_phase') {
     newState.nextColorToPot = findNextColor(newState.balls);
+  } else {
+    newState.nextColorToPot = null;
+  }
+
+  // Check free ball after the foul position and phase for the incoming
+  // player are known (§3 Rule 12).
+  if (hasScoringFoul && newState.phase !== 'game_over' && isIncomingPlayerSnookered(newState, newState.balls)) {
+    newState.freeBall = true;
+    newState.statusMessage += ' — Free Ball!';
   }
 
   // --- TOUCHING BALL DETECTION ---
@@ -494,45 +421,12 @@ export function applyShotResult(
   // WPBSA §4(a): When Black is the only object ball remaining, first pot or foul
   // ends the frame EXCEPT when scores are equal and aggregate not relevant.
   // §4(b): If equal → re-spot Black, draw lots, play from in-hand, first pot/foul ends frame.
-  if (newState.phase === 'colors_phase') {
-    const colorsRemaining = COLORS_ORDER.filter(c =>
-      newState.balls.find(b => b.color === c && !b.pocketed)
-    );
-    if (colorsRemaining.length === 0) {
-      const p0 = newState.players[0].score;
-      const p1 = newState.players[1].score;
-
-      if (p0 === p1) {
-        // §4(b): Scores equal — re-spot the Black
-        const blackBall = newState.balls.find(b => b.color === 'black');
-        if (blackBall) {
-          blackBall.pocketed = false;
-          blackBall.pos = { x: 324, y: CENTER_Y }; // Black spot
-          blackBall.vel = { x: 0, y: 0 };
-        }
-        // Random choice of next player (§4(b)(ii))
-        newState.currentPlayerIndex = Math.random() < 0.5 ? 0 : 1;
-        // Reset cue ball to in-hand
-        const cueBall = newState.balls.find(b => b.color === 'white');
-        if (cueBall) {
-          cueBall.pocketed = false;
-          cueBall.pos = { x: BAULK_LINE_X, y: CENTER_Y + D_ZONE_RADIUS * 0.4 };
-          cueBall.vel = { x: 0, y: 0 };
-        }
-        // Stay in colors_phase so the re-spotted Black is the next target
-        newState.nextColorToPot = 'black';
-        newState.statusMessage = `比分平局! 黑球已放回，${newState.players[newState.currentPlayerIndex].name}先手`;
-      } else {
-        // §4(a): Scores not equal — frame ends
-        newState.phase = 'game_over';
-        newState.frameScores.push([p0, p1]);
-        if (p0 > p1) {
-          newState.statusMessage = `第${newState.frameNumber}局结束! ${newState.players[0].name}获胜 (${p0}-${p1})`;
-        } else {
-          newState.statusMessage = `第${newState.frameNumber}局结束! ${newState.players[1].name}获胜 (${p0}-${p1})`;
-        }
-      }
-    }
+  const blackPotted = simResult.pottedBalls.some(b => b.color === 'black');
+  if (
+    (blackOnlyBefore && (hasScoringFoul || blackPotted)) ||
+    (newState.phase === 'colors_phase' && findNextColor(newState.balls) === null)
+  ) {
+    settleFrameAfterFinalBlack(newState);
   }
 
   return newState;
@@ -554,6 +448,8 @@ export function createInitialGameState(playerNames: [string, string], balls: Bal
     freeBall: false,
     freeBallNominee: null,
     missCount: 0,
+    missWarningIssued: false,
+    cueBallInHand: true,
     lastFoulPosition: null,
     touchingBalls: [],
     stalemateCount: 0,
@@ -574,32 +470,242 @@ function getTargetBall(state: GameState, shotParams: ShotParams): Ball | undefin
   return state.balls.find(b => b.id === shotParams.targetBallId && !b.pocketed);
 }
 
+function getNaturalBallOnColors(state: GameState): BallColor[] {
+  if (state.phase === 'break_off' || state.phase === 'reds_phase') return ['red'];
+  if (state.phase === 'color_after_red') {
+    return COLORS_ORDER.filter(color => state.balls.some(b => b.color === color && !b.pocketed));
+  }
+  if (state.phase === 'colors_phase' && state.nextColorToPot) return [state.nextColorToPot];
+  return ['red'];
+}
+
 function getBallOnPenaltyValue(state: GameState, shotParams: ShotParams): number {
-  const required = getRequiredFirstContact(state);
+  const requiredColors = getNaturalBallOnColors(state);
   const targetBall = getTargetBall(state, shotParams);
 
-  if (targetBall && required.required.includes(targetBall.color)) {
-    return BALL_VALUES[targetBall.color] || MIN_FOUL_POINTS;
+  if (targetBall && requiredColors.includes(targetBall.color)) {
+    return BALL_VALUES[targetBall.color];
   }
 
-  if (required.required.length === 1) {
-    return BALL_VALUES[required.required[0]] || MIN_FOUL_POINTS;
+  if (requiredColors.length === 1) {
+    return BALL_VALUES[requiredColors[0]];
   }
 
   return MIN_FOUL_POINTS;
 }
 
 /** Get the current ball-on's scoring value (§12(a)(ii): free ball acquires ball-on value) */
-function getBallOnValue(state: GameState): number {
-  const required = getRequiredFirstContact(state);
-  if (required.required.length === 1) {
-    return BALL_VALUES[required.required[0]] || MIN_FOUL_POINTS;
+function getBallOnValue(state: GameState, shotParams?: ShotParams): number {
+  const requiredColors = getNaturalBallOnColors(state);
+  const targetBall = shotParams ? getTargetBall(state, shotParams) : undefined;
+  if (targetBall && requiredColors.includes(targetBall.color)) {
+    return BALL_VALUES[targetBall.color];
   }
-  // Multiple possible ball-ons (e.g., reds phase) — use ball-on value
-  if (state.phase === 'reds_phase' || state.phase === 'break_off') {
-    return BALL_VALUES.red; // Ball-on is red = 1 point
+  if (requiredColors.length === 1) {
+    return BALL_VALUES[requiredColors[0]];
   }
   return MIN_FOUL_POINTS;
+}
+
+function getNominatedFreeBall(state: GameState, shotParams: ShotParams): Ball | null {
+  if (!state.freeBall) return null;
+  const targetBall = getTargetBall(state, shotParams);
+  if (!targetBall || targetBall.color === 'white') return null;
+  return getNaturalBallOnColors(state).includes(targetBall.color) ? null : targetBall;
+}
+
+function getFirstContactIds(simResult: SimulationResult): number[] {
+  if (simResult.firstContactBallIds?.length) return simResult.firstContactBallIds;
+  return simResult.firstContactBallId === null ? [] : [simResult.firstContactBallId];
+}
+
+function checkFirstContact(
+  state: GameState,
+  shotParams: ShotParams,
+  firstContactBalls: Ball[],
+  nominatedFreeBall: Ball | null,
+): Foul | null {
+  if (firstContactBalls.length === 0) return null;
+  const firstBall = firstContactBalls[0];
+  const ballOnColors = getNaturalBallOnColors(state);
+
+  if (nominatedFreeBall) {
+    const hitNominee = firstContactBalls.some(b => b.id === nominatedFreeBall.id);
+    if (hitNominee) return null;
+
+    const penalty = Math.max(
+      MIN_FOUL_POINTS,
+      getBallOnPenaltyValue(state, shotParams),
+      BALL_VALUES[firstBall.color],
+    );
+    return {
+      type: 'wrong_ball_first_contact',
+      points: penalty,
+      description: `Free Ball先碰了${firstBall.color}，应先碰提名的${nominatedFreeBall.color}，罚${penalty}分`,
+    };
+  }
+
+  if (ballOnColors.includes(firstBall.color)) return null;
+
+  const penalty = Math.max(
+    MIN_FOUL_POINTS,
+    getBallOnPenaltyValue(state, shotParams),
+    BALL_VALUES[firstBall.color],
+  );
+  return {
+    type: 'wrong_ball_first_contact',
+    points: penalty,
+    description: `先碰了${firstBall.color}球，罚${penalty}分`,
+  };
+}
+
+function checkSimultaneousFirstContact(
+  state: GameState,
+  shotParams: ShotParams,
+  firstContactBalls: Ball[],
+  nominatedFreeBall: Ball | null,
+): Foul | null {
+  if (firstContactBalls.length < 2) return null;
+
+  const ballOnColors = getNaturalBallOnColors(state);
+  const legalTwoReds = ballOnColors.includes('red') && firstContactBalls.every(b => b.color === 'red');
+  const legalFreeBallAndOn = nominatedFreeBall !== null &&
+    firstContactBalls.some(b => b.id === nominatedFreeBall.id) &&
+    firstContactBalls.some(b => ballOnColors.includes(b.color));
+
+  if (legalTwoReds || legalFreeBallAndOn) return null;
+
+  const concernedValue = Math.max(...firstContactBalls.map(b => BALL_VALUES[b.color]));
+  const penalty = Math.max(MIN_FOUL_POINTS, getBallOnPenaltyValue(state, shotParams), concernedValue);
+  return {
+    type: 'simultaneous_first_contact',
+    points: penalty,
+    description: `首碰同时碰到${firstContactBalls.map(b => b.color).join('、')}，罚${penalty}分`,
+  };
+}
+
+function isPottedBallLegal(
+  state: GameState,
+  shotParams: ShotParams,
+  potted: Ball,
+  nominatedFreeBall: Ball | null,
+): boolean {
+  if (nominatedFreeBall && potted.id === nominatedFreeBall.id) return true;
+
+  const ballOnColors = getNaturalBallOnColors(state);
+  if (state.phase === 'break_off' || state.phase === 'reds_phase') return potted.color === 'red';
+  if (state.phase === 'color_after_red') {
+    const target = getTargetBall(state, shotParams);
+    return Boolean(target && potted.id === target.id && ballOnColors.includes(potted.color));
+  }
+  if (state.phase === 'colors_phase') return potted.color === state.nextColorToPot;
+  return false;
+}
+
+function scoreLegalPots(
+  state: GameState,
+  shotParams: ShotParams,
+  pottedBalls: Ball[],
+  nominatedFreeBall: Ball | null,
+): { points: number; balls: Ball[] } {
+  let points = 0;
+  const scoredBalls: Ball[] = [];
+  const ballOnValue = getBallOnValue(state, shotParams);
+  const ballOnColors = getNaturalBallOnColors(state);
+  const ballOnPotted = pottedBalls.filter(b => b.color !== 'white' && ballOnColors.includes(b.color));
+  const freeBallPotted = nominatedFreeBall
+    ? pottedBalls.find(b => b.id === nominatedFreeBall.id)
+    : undefined;
+
+  if (nominatedFreeBall) {
+    if (ballOnColors.includes('red')) {
+      for (const red of ballOnPotted.filter(b => b.color === 'red')) {
+        points += BALL_VALUES.red;
+        scoredBalls.push(red);
+      }
+      if (freeBallPotted) {
+        points += BALL_VALUES.red;
+        scoredBalls.push(freeBallPotted);
+      }
+      return { points, balls: scoredBalls };
+    }
+
+    if (ballOnPotted.length > 0) {
+      points += ballOnValue;
+      scoredBalls.push(ballOnPotted[0]);
+    } else if (freeBallPotted) {
+      points += ballOnValue;
+      scoredBalls.push(freeBallPotted);
+    }
+    return { points, balls: scoredBalls };
+  }
+
+  for (const potted of pottedBalls) {
+    if (potted.color === 'white') continue;
+    if (state.phase === 'break_off' || state.phase === 'reds_phase') {
+      if (potted.color === 'red') {
+        points += BALL_VALUES.red;
+        scoredBalls.push(potted);
+      }
+    } else if (state.phase === 'color_after_red') {
+      const target = getTargetBall(state, shotParams);
+      if (target && potted.id === target.id) {
+        points += BALL_VALUES[potted.color];
+        scoredBalls.push(potted);
+      }
+    } else if (state.phase === 'colors_phase' && potted.color === state.nextColorToPot) {
+      points += BALL_VALUES[potted.color];
+      scoredBalls.push(potted);
+    }
+  }
+
+  return { points, balls: scoredBalls };
+}
+
+function checkFreeBallSnooker(
+  state: GameState,
+  shotParams: ShotParams,
+  simResult: SimulationResult,
+  nominatedFreeBall: Ball | null,
+  pointsScored: number,
+): Foul | null {
+  if (!nominatedFreeBall || pointsScored > 0) return null;
+  const objectBalls = simResult.finalBalls.filter(b => b.color !== 'white' && !b.pocketed);
+  if (objectBalls.length <= 2) return null;
+
+  const nomineeAfter = simResult.finalBalls.find(b => b.id === nominatedFreeBall.id && !b.pocketed);
+  if (!nomineeAfter) return null;
+
+  const nextState = {
+    ...state,
+    balls: simResult.finalBalls,
+    phase: phaseForIncomingTurnAfterBreakEnds(state, { ...state, balls: simResult.finalBalls }),
+    freeBall: false,
+    freeBallNominee: null,
+  } as GameState;
+
+  if (!isIncomingPlayerSnookered(nextState, simResult.finalBalls)) return null;
+  if (!isEffectiveSnookeringBall(nextState, nomineeAfter, simResult.finalBalls)) return null;
+
+  const penalty = Math.max(MIN_FOUL_POINTS, getBallOnPenaltyValue(state, shotParams));
+  return {
+    type: 'free_ball_snooker',
+    points: penalty,
+    description: `提名自由球${nominatedFreeBall.color}在未得分后形成斯诺克，罚${penalty}分`,
+  };
+}
+
+function hasTouchingBallThatIsOrCouldBeOn(state: GameState, shotParams: ShotParams): boolean {
+  if (state.touchingBalls.length === 0) return false;
+  const ballOnColors = getNaturalBallOnColors(state);
+  const targetBall = getTargetBall(state, shotParams);
+
+  return state.touchingBalls.some(id => {
+    const ball = state.balls.find(b => b.id === id && !b.pocketed);
+    if (!ball) return false;
+    if (ballOnColors.includes(ball.color)) return true;
+    return state.phase === 'color_after_red' && targetBall?.id === ball.id;
+  });
 }
 
 function findNextColor(balls: Ball[]): BallColor | null {
@@ -610,17 +716,102 @@ function findNextColor(balls: Ball[]): BallColor | null {
   return null;
 }
 
+function phaseForIncomingTurnAfterBreakEnds(previousState: GameState, stateAfterShot: Pick<GameState, 'balls' | 'phase'>): GamePhase {
+  const redsRemaining = stateAfterShot.balls.filter(b => b.color === 'red' && !b.pocketed).length;
+  if (redsRemaining > 0) return previousState.phase === 'break_off' ? 'reds_phase' : 'reds_phase';
+  if (previousState.phase === 'game_over') return 'game_over';
+  return 'colors_phase';
+}
+
+function reSpotRequiredColors(
+  previousState: GameState,
+  newState: GameState,
+  simResult: SimulationResult,
+  shotResult: ShotResult,
+  hasScoringFoul: boolean,
+): void {
+  const colorsToConsider = [...simResult.pottedBalls, ...simResult.offTableBalls]
+    .filter(b => b.color !== 'white' && b.color !== 'red');
+  const legalFinalColorIds = new Set(
+    !hasScoringFoul && previousState.phase === 'colors_phase'
+      ? shotResult.pottedBalls.filter(b => b.color === previousState.nextColorToPot).map(b => b.id)
+      : [],
+  );
+
+  for (const color of COLORS_ORDER) {
+    const balls = colorsToConsider.filter(b => b.color === color && !legalFinalColorIds.has(b.id));
+    for (const potted of balls) {
+      const colorBall = newState.balls.find(b => b.id === potted.id);
+      if (!colorBall) continue;
+      colorBall.pocketed = false;
+      colorBall.vel = { x: 0, y: 0 };
+      colorBall.pos = findReSpotPosition(potted.color, newState.balls);
+    }
+  }
+}
+
+function isBlackOnlyObjectBall(balls: Ball[]): boolean {
+  const objectBalls = balls.filter(b => b.color !== 'white' && !b.pocketed);
+  return objectBalls.length === 1 && objectBalls[0].color === 'black';
+}
+
+function settleFrameAfterFinalBlack(state: GameState): void {
+  const p0 = state.players[0].score;
+  const p1 = state.players[1].score;
+
+  if (p0 === p1) {
+    const blackBall = state.balls.find(b => b.color === 'black');
+    if (blackBall) {
+      blackBall.pocketed = false;
+      const spot = findReSpotPosition('black', state.balls);
+      blackBall.pos = spot;
+      blackBall.vel = { x: 0, y: 0 };
+    }
+
+    state.currentPlayerIndex = Math.random() < 0.5 ? 0 : 1;
+    const cueBall = state.balls.find(b => b.color === 'white');
+    if (cueBall) {
+      cueBall.pocketed = false;
+      cueBall.pos = { x: BAULK_LINE_X, y: CENTER_Y + D_ZONE_RADIUS * 0.4 };
+      cueBall.vel = { x: 0, y: 0 };
+    }
+    state.cueBallInHand = true;
+    state.phase = 'colors_phase';
+    state.nextColorToPot = 'black';
+    state.freeBall = false;
+    state.statusMessage = `比分平局! 黑球已放回，${state.players[state.currentPlayerIndex].name}先手`;
+    return;
+  }
+
+  state.phase = 'game_over';
+  state.nextColorToPot = null;
+  state.frameScores.push([p0, p1]);
+  state.statusMessage = p0 > p1
+    ? `第${state.frameNumber}局结束! ${state.players[0].name}获胜 (${p0}-${p1})`
+    : `第${state.frameNumber}局结束! ${state.players[1].name}获胜 (${p0}-${p1})`;
+}
+
+function isCueBallInD(balls: Ball[]): boolean {
+  const cueBall = balls.find(b => b.color === 'white' && !b.pocketed);
+  if (!cueBall) return true;
+  const dx = cueBall.pos.x - BAULK_LINE_X;
+  const dy = cueBall.pos.y - CENTER_Y;
+  const withinCircle = dx * dx + dy * dy <= D_ZONE_RADIUS * D_ZONE_RADIUS + 0.01;
+  const inBaulkHalf = cueBall.pos.x >= BAULK_LINE_X - 0.01;
+  return withinCircle && inBaulkHalf;
+}
+
 /**
  * Check if there is a clear path from the cue ball to any ball-on (§14(c)(d)).
  * Returns true if full-ball contact is available on at least one ball-on
  * (i.e., no obstructing ball blocks the path).
  */
 function checkClearPathToBallOn(state: GameState, simResult: SimulationResult): boolean {
-  const cueBall = simResult.finalBalls.find(b => b.color === 'white' && !b.pocketed);
+  const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
   if (!cueBall) return false;
 
   const required = getRequiredFirstContact(state);
-  const allBalls = simResult.finalBalls.filter(b => !b.pocketed);
+  const allBalls = state.balls.filter(b => !b.pocketed);
 
   for (const color of required.required) {
     const targets = allBalls.filter(b => b.color === color && b.color !== 'white');
@@ -634,19 +825,34 @@ function checkClearPathToBallOn(state: GameState, simResult: SimulationResult): 
 }
 
 /** Check if the incoming player is snookered (for free ball determination) */
-function isIncomingPlayerSnookered(state: GameState, simResult: SimulationResult): boolean {
-  const cueBall = simResult.finalBalls.find(b => b.color === 'white' && !b.pocketed);
+function isIncomingPlayerSnookered(state: GameState, balls: Ball[]): boolean {
+  const cueBall = balls.find(b => b.color === 'white' && !b.pocketed);
   if (!cueBall) return false;
 
-  // Determine what balls the incoming player needs to hit
-  const nextState: GameState = { ...state, balls: simResult.finalBalls };
+  const nextState: GameState = { ...state, balls };
   const required = getRequiredFirstContact(nextState);
 
   // Check if every required ball is blocked (no direct line of sight)
   return required.required.every(color => {
-    const targets = simResult.finalBalls.filter(b => b.color === color && !b.pocketed);
-    return targets.every(target => !hasDirectLineOfSight(cueBall, target, simResult.finalBalls));
+    const targets = balls.filter(b => b.color === color && !b.pocketed);
+    return targets.length > 0 && targets.every(target => !hasDirectLineOfSight(cueBall, target, balls));
   });
+}
+
+function isEffectiveSnookeringBall(state: GameState, blocker: Ball, balls: Ball[]): boolean {
+  const cueBall = balls.find(b => b.color === 'white' && !b.pocketed);
+  if (!cueBall) return false;
+
+  const required = getRequiredFirstContact(state);
+  for (const color of required.required) {
+    const targets = balls.filter(b => b.color === color && !b.pocketed);
+    for (const target of targets) {
+      if (hasDirectLineOfSight(cueBall, target, balls.filter(b => b.id !== blocker.id))) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 /** Check if there's a direct line of sight between two balls */
@@ -675,27 +881,15 @@ function hasDirectLineOfSight(from: Ball, to: Ball, allBalls: Ball[]): boolean {
 function checkTouchingBallViolation(state: GameState, simResult: SimulationResult): Foul | null {
   if (state.touchingBalls.length === 0) return null;
 
-  const required = getRequiredFirstContact(state);
-  const cueBall = simResult.finalBalls.find(b => b.color === 'white');
-  if (!cueBall) return null;
-
-  // If the touching ball is the ball-on, player must play towards it (valid)
-  // If the touching ball is NOT the ball-on, player must play away without moving it
-  const touchingIsBallOn = state.touchingBalls.some(id => {
-    const ball = state.balls.find(b => b.id === id);
-    return ball && required.required.includes(ball.color);
-  });
-
-  if (touchingIsBallOn) return null; // Valid: touching ball is the ball-on
-
-  // Check if any touching ball was moved
+  // Whether the touching ball is on or not, it must be played away from
+  // without moving that object ball (§3 Rule 8(b)).
   for (const touchingId of state.touchingBalls) {
     const before = state.balls.find(b => b.id === touchingId);
     const after = simResult.finalBalls.find(b => b.id === touchingId);
     if (before && after) {
       const moved = distanceBetween(before.pos, after.pos) > 1;
       if (moved) {
-        const penalty = Math.max(MIN_FOUL_POINTS, BALL_VALUES[before.color as BallColor] || 0);
+        const penalty = Math.max(MIN_FOUL_POINTS, getBallOnValue(state), BALL_VALUES[before.color]);
         return {
           type: 'touching_ball_violation',
           points: penalty,

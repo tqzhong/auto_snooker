@@ -254,13 +254,23 @@ export function calculateSafetyShot(
 
 export function getAvailableTargets(state: GameState): { description: string; ballIds: number[] } {
   const redsOnTable = state.balls.filter(b => b.color === 'red' && !b.pocketed);
+  const colorsOnTable = state.balls.filter(b =>
+    COLORS_ORDER.includes(b.color as BallColor) && !b.pocketed
+  );
 
   if (state.freeBall) {
-    const allColors = state.balls.filter(b =>
-      COLORS_ORDER.includes(b.color as BallColor) && !b.pocketed
-    );
-    const legalIds = [...redsOnTable.map(b => b.id), ...allColors.map(b => b.id)];
-    return { description: 'Free Ball — 可击打任意球', ballIds: legalIds };
+    if (state.phase === 'break_off' || state.phase === 'reds_phase') {
+      return { description: 'Free Ball — 提名一颗非红球作为红球', ballIds: colorsOnTable.map(b => b.id) };
+    }
+    if (state.phase === 'color_after_red') {
+      return { description: 'Free Ball — 提名一颗非目标彩球作为彩球', ballIds: colorsOnTable.map(b => b.id) };
+    }
+    if (state.phase === 'colors_phase' && state.nextColorToPot) {
+      return {
+        description: `Free Ball — 提名一颗非${state.nextColorToPot}作为目标球`,
+        ballIds: colorsOnTable.filter(b => b.color !== state.nextColorToPot).map(b => b.id),
+      };
+    }
   }
 
   if (state.phase === 'break_off' || state.phase === 'reds_phase') {
@@ -270,8 +280,7 @@ export function getAvailableTargets(state: GameState): { description: string; ba
 
   if (state.phase === 'color_after_red') {
     // §3(h)(i): After potting a red, next ball on is a colour of striker's choice
-    const colors = state.balls.filter(b => COLORS_ORDER.includes(b.color as BallColor) && !b.pocketed);
-    return { description: '进球红球后，可选择任意彩球', ballIds: colors.map(b => b.id) };
+    return { description: '进球红球后，可选择任意彩球', ballIds: colorsOnTable.map(b => b.id) };
   }
 
   if (state.phase === 'colors_phase' && state.nextColorToPot) {

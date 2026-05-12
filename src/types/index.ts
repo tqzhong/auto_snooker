@@ -71,6 +71,9 @@ export type FoulType =
   | 'miss'
   | 'touching_ball_violation'
   | 'break_requirements'
+  | 'simultaneous_first_contact'
+  | 'free_ball_snooker'
+  | 'improper_in_hand'
   | 'ball_not_on_pocketed'; // §11(b)(iii): ball not on pocketed
 
 export interface Foul {
@@ -115,6 +118,10 @@ export interface GameState {
   freeBallNominee: BallColor | null;
   /** Consecutive miss count for the miss rule (max 4 before frame loss) */
   missCount: number;
+  /** Warning state for repeated Foul and a Miss from an original position */
+  missWarningIssued: boolean;
+  /** True when the cue ball must be played from on or within the D */
+  cueBallInHand: boolean;
   /** Cue ball position before the last foul (for miss rule replay) */
   lastFoulPosition: Vec2 | null;
   /** Ball IDs currently touching the cue ball at rest */

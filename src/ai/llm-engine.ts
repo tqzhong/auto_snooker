@@ -698,10 +698,10 @@ function buildUserPrompt(state: GameState): string {
   // Free ball, miss, touching ball, score context
   let contextInfo = '';
   if (state.freeBall) {
-    contextInfo += `\n🟢 Free Ball 激活！可以击打任意球作为目标球。`;
+    contextInfo += `\n🟢 Free Ball 激活！需选择一个非当前目标球作为提名自由球，先碰该球，或让该球与目标球同时首碰。`;
   }
   if (state.missCount > 0) {
-    contextInfo += `\n⚠️ 连续Miss: ${state.missCount}/3（第4次判负）。请选择更稳妥的出杆。`;
+    contextInfo += `\n⚠️ 连续Miss: ${state.missCount}。若对手要求从原位重打并已警告，再次失败可能被判负；请选择更稳妥的出杆。`;
   }
   if (state.touchingBalls.length > 0) {
     const touchingNames = state.touchingBalls.map(id => {
@@ -733,6 +733,28 @@ Return valid JSON only. Aggressive style: if any legal target has 可进袋线�
 
 function getAvailableTargets(state: GameState): { description: string; ballIds: number[] } {
   const redsOnTable = state.balls.filter(b => b.color === 'red' && !b.pocketed);
+  const colorsOnTable = state.balls.filter(b => COLORS_ORDER.includes(b.color as BallColor) && !b.pocketed);
+
+  if (state.freeBall) {
+    if (state.phase === 'break_off' || state.phase === 'reds_phase') {
+      return {
+        description: 'Free Ball — 提名一颗非红球作为红球',
+        ballIds: colorsOnTable.map(b => b.id),
+      };
+    }
+    if (state.phase === 'color_after_red') {
+      return {
+        description: 'Free Ball — 提名一颗非目标彩球作为彩球',
+        ballIds: colorsOnTable.map(b => b.id),
+      };
+    }
+    if (state.phase === 'colors_phase' && state.nextColorToPot) {
+      return {
+        description: `Free Ball — 提名一颗非${state.nextColorToPot}作为目标球`,
+        ballIds: colorsOnTable.filter(b => b.color !== state.nextColorToPot).map(b => b.id),
+      };
+    }
+  }
 
   if (state.phase === 'break_off' || state.phase === 'reds_phase') {
     // §3(g): Until all Reds are off the table, Red is the ball on
