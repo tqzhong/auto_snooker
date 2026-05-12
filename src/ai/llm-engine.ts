@@ -14,6 +14,7 @@ import {
   createInitialBalls,
 } from '../engine/physics';
 import type { SimulationResult } from '../engine/physics';
+import { maxPointsRemaining } from '../engine/rules';
 
 // API config from environment
 const ENV = import.meta.env || {};
@@ -652,7 +653,10 @@ Rules:
 - Aggressive style: choose "attack" whenever any legal target has 可进袋线路 greater than 0.
 - Choose "safety" or "snooker" only when every legal target has 可进袋线路0条 or is blocked.
 - Prefer a harder pot over safety when the target is legal and has a clear pot line.
-- The physics engine will calculate the exact aim angle. You choose target, strategy, power, and spin only.`;
+- The physics engine will calculate the exact aim angle. You choose target, strategy, power, and spin only.
+- Free Ball: when active, you can legally hit ANY ball. Prioritize high-value balls (black=7, pink=6).
+- Miss warning: avoid consecutive misses. If miss count >= 2, play safer shots.
+- Score-aware: if leading significantly, prefer safety. If trailing with few points left, attack aggressively.`;
 }
 
 function buildUserPrompt(state: GameState): string {
@@ -691,6 +695,30 @@ function buildUserPrompt(state: GameState): string {
     }).join(' | ');
   }
 
+  // Free ball, miss, touching ball, score context
+  let contextInfo = '';
+  if (state.freeBall) {
+    contextInfo += `\n🟢 Free Ball 激活！可以击打任意球作为目标球。`;
+  }
+  if (state.missCount > 0) {
+    contextInfo += `\n⚠️ 连续Miss: ${state.missCount}/3（第4次判负）。请选择更稳妥的出杆。`;
+  }
+  if (state.touchingBalls.length > 0) {
+    const touchingNames = state.touchingBalls.map(id => {
+      const ball = state.balls.find(b => b.id === id);
+      return ball ? ball.color : `#${id}`;
+    });
+    contextInfo += `\n🔵 母球接触中: ${touchingNames.join(', ')}。必须合法离开。`;
+  }
+
+  const scoreDiff = current.score - opponent.score;
+  const pointsRemaining = maxPointsRemaining(state.balls, state.phase);
+  if (scoreDiff > pointsRemaining) {
+    contextInfo += `\n📊 领先${scoreDiff}分，剩余${pointsRemaining}分。优势明显，考虑防守。`;
+  } else if (scoreDiff < -20) {
+    contextInfo += `\n📊 落后${Math.abs(scoreDiff)}分，剩余${pointsRemaining}分。需要积极进攻。`;
+  }
+
   return `Current player: ${current.name}, score ${current.score}, opponent ${opponent.score}.
 Phase: ${state.phase}
 Table: ${formatBallState(state.balls)}
@@ -698,7 +726,7 @@ Legal target rule: ${available.description}
 Legal target details:
 ${targetInfo}
 Distance reference: ${distInfo}
-Recent history: ${formatShotHistory(state.shotHistory, [state.players[0].name, state.players[1].name])}
+Recent history: ${formatShotHistory(state.shotHistory, [state.players[0].name, state.players[1].name])}${contextInfo}
 
 Return valid JSON only. Aggressive style: if any legal target has 可进袋线路 > 0, choose attack and select one of those targets.`;
 }

@@ -68,7 +68,9 @@ export type FoulType =
   | 'no_ball_contact'
   | 'no_cushion_after_contact'
   | 'hit_off_table'
-  | 'miss';
+  | 'miss'
+  | 'touching_ball_violation'
+  | 'break_requirements';
 
 export interface Foul {
   type: FoulType;
@@ -108,6 +110,18 @@ export interface GameState {
   nextColorToPot: BallColor | null;
   consecutiveFouls: number;
   freeBall: boolean;
+  /** When free ball is active, which color the player nominated as the ball-on */
+  freeBallNominee: BallColor | null;
+  /** Consecutive miss count for the miss rule (max 4 before frame loss) */
+  missCount: number;
+  /** Cue ball position before the last foul (for miss rule replay) */
+  lastFoulPosition: Vec2 | null;
+  /** Ball IDs currently touching the cue ball at rest */
+  touchingBalls: number[];
+  /** Consecutive safety exchanges (no pot, no foul) for stalemate detection */
+  stalemateCount: number;
+  /** Number of balls that hit the cushion after first contact in break-off */
+  breakCushionHits: number;
   shotHistory: ShotRecord[];
   frameNumber: number;
   frameScores: [number, number][];

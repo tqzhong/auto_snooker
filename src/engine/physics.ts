@@ -285,16 +285,23 @@ export interface SimulationResult {
   firstContactBallId: number | null;
   cueBallPotted: boolean;
   cushionHitAfterContact: boolean;
+  /** Balls that went off the playing surface */
+  offTableBalls: Ball[];
+  /** Number of cushion hits by the cue ball after first contact (for break-off rules) */
+  cushionHitsAfterContact: number;
   finalBalls: Ball[];
   frames: Ball[][];
 }
 
 /** Run full physics simulation until all balls stop */
-export function simulateShot(balls: Ball[]): SimulationResult {
+export function simulateShot(balls: Ball[], options?: { generateFrames?: boolean }): SimulationResult {
+  const generateFrames = options?.generateFrames !== false;
   const pottedBalls: Ball[] = [];
+  const offTableBalls: Ball[] = [];
   let firstContactBallId: number | null = null;
   let cueBallPotted = false;
   let cushionHitAfterContact = false;
+  let cushionHitsAfterContact = 0;
   let hasContact = false;
   const frames: Ball[][] = [];
   const FRAME_INTERVAL_TICKS = Math.round(0.05 / PHYSICS_TIMESTEP);
@@ -308,11 +315,12 @@ export function simulateShot(balls: Ball[]): SimulationResult {
 
   const cueBall = simBalls.find(b => b.color === 'white');
   if (!cueBall) {
-    return { pottedBalls: [], firstContactBallId: null, cueBallPotted: false, cushionHitAfterContact: false, finalBalls: simBalls, frames: [] };
+    return { pottedBalls: [], firstContactBallId: null, cueBallPotted: false, cushionHitAfterContact: false, offTableBalls: [], cushionHitsAfterContact: 0, finalBalls: simBalls, frames: [] };
   }
 
   const dt = PHYSICS_TIMESTEP;
   let elapsed = 0;
+  const offTableMargin = -BALL_RADIUS * 2;
 
   while (!allBallsStopped(simBalls) && elapsed < MAX_SIMULATION_TIME) {
     for (const ball of simBalls) {
@@ -340,9 +348,10 @@ export function simulateShot(balls: Ball[]): SimulationResult {
       if (ball.pocketed) continue;
       const oldVel = { ...ball.vel };
       handleCushionBounce(ball);
-      if (hasContact &&
+      if (hasContact && ball.color === 'white' &&
         (oldVel.x !== ball.vel.x || oldVel.y !== ball.vel.y)) {
         cushionHitAfterContact = true;
+        cushionHitsAfterContact++;
       }
     }
 
@@ -359,13 +368,27 @@ export function simulateShot(balls: Ball[]): SimulationResult {
       }
     }
 
+    // Off-table detection: ball position beyond table boundary
+    for (const ball of simBalls) {
+      if (ball.pocketed) continue;
+      if (ball.pos.x < offTableMargin || ball.pos.x > TABLE_LENGTH - offTableMargin ||
+          ball.pos.y < offTableMargin || ball.pos.y > TABLE_WIDTH - offTableMargin) {
+        ball.pocketed = true;
+        ball.vel = vec2(0, 0);
+        if (ball.color === 'white') {
+          cueBallPotted = true;
+        }
+        offTableBalls.push({ ...ball });
+      }
+    }
+
     for (const ball of simBalls) {
       if (ball.pocketed) continue;
       applyFriction(ball, dt);
     }
 
     tickCount++;
-    if (tickCount % FRAME_INTERVAL_TICKS === 0) {
+    if (generateFrames && tickCount % FRAME_INTERVAL_TICKS === 0) {
       frames.push(simBalls.map(b => ({
         ...b,
         pos: { ...b.pos },
@@ -382,17 +405,21 @@ export function simulateShot(balls: Ball[]): SimulationResult {
     }
   }
 
-  frames.push(simBalls.map(b => ({
-    ...b,
-    pos: { ...b.pos },
-    vel: { ...b.vel },
-  })));
+  if (generateFrames) {
+    frames.push(simBalls.map(b => ({
+      ...b,
+      pos: { ...b.pos },
+      vel: { ...b.vel },
+    })));
+  }
 
   return {
     pottedBalls,
     firstContactBallId,
     cueBallPotted,
     cushionHitAfterContact,
+    offTableBalls,
+    cushionHitsAfterContact,
     finalBalls: simBalls,
     frames,
   };
@@ -414,4 +441,20 @@ export function describeBallPositions(balls: Ball[]): string {
     const label = b.color === 'white' ? 'cue' : b.color;
     return `${label}(${Math.round(b.pos.x)},${Math.round(b.pos.y)})`;
   }).join(', ');
+}
+
+/** Detect balls touching the cue ball at rest */
+export function detectTouchingBalls(balls: Ball[]): number[] {
+  const cueBall = balls.find(b => b.color === 'white' && !b.pocketed);
+  if (!cueBall) return [];
+
+  const touching: number[] = [];
+  for (const ball of balls) {
+    if (ball.pocketed || ball.id === cueBall.id) continue;
+    const dist = distanceBetween(cueBall.pos, ball.pos);
+    if (dist <= (cueBall.radius + ball.radius) * 1.02) {
+      touching.push(ball.id);
+    }
+  }
+  return touching;
 }

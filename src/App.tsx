@@ -12,6 +12,7 @@ import { getAIMoveDecision } from './ai/llm-engine';
 import { GameTable } from './components/GameTable';
 import { Scoreboard } from './components/Scoreboard';
 import { ShotHistory } from './components/ShotHistory';
+import { TrainingPanel } from './components/TrainingPanel';
 
 // Simulation speed (ms between each simulation tick)
 const DEFAULT_TICK_MS = 16; // ~60fps
@@ -24,6 +25,7 @@ export default function App() {
   });
 
   const [isPlaying, setIsPlaying] = useState(false);
+  const [activeTab, setActiveTab] = useState<'game' | 'training'>('game');
   const [speed, setSpeed] = useState(1); // 1x, 2x, 4x
   const [shotInFlight, setShotInFlight] = useState(false);
   const [currentAim, setCurrentAim] = useState<{ from: Vec2; to: Vec2 } | undefined>();
@@ -213,8 +215,24 @@ export default function App() {
         </p>
       </header>
 
+      {/* Tab Bar */}
+      <div style={styles.tabBar}>
+        <button
+          style={activeTab === 'game' ? styles.tabActive : styles.tab}
+          onClick={() => setActiveTab('game')}
+        >
+          🎱 对局
+        </button>
+        <button
+          style={activeTab === 'training' ? styles.tabActive : styles.tab}
+          onClick={() => setActiveTab('training')}
+        >
+          🎓 训练中心
+        </button>
+      </div>
+
       {/* Main content */}
-      <div style={styles.main}>
+      {activeTab === 'game' ? (<div style={styles.main}>
         {/* Left panel: Scoreboard */}
         <div style={styles.leftPanel}>
           <Scoreboard state={gameState} />
@@ -295,6 +313,11 @@ export default function App() {
           )}
         </div>
       </div>
+      ) : (
+        <div style={styles.main}>
+          <TrainingPanel />
+        </div>
+      )}
 
       {/* Footer */}
       <footer style={styles.footer}>
@@ -474,5 +497,35 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '11px',
     color: 'rgba(255,255,255,0.2)',
     borderTop: '1px solid rgba(255,255,255,0.06)',
+  },
+  tabBar: {
+    display: 'flex',
+    justifyContent: 'center',
+    gap: '4px',
+    padding: '10px 20px 0',
+  },
+  tab: {
+    padding: '8px 20px',
+    borderRadius: '8px 8px 0 0',
+    border: '1px solid rgba(255,255,255,0.1)',
+    borderBottom: 'none',
+    background: 'transparent',
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: '13px',
+    fontWeight: 600,
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+  },
+  tabActive: {
+    padding: '8px 20px',
+    borderRadius: '8px 8px 0 0',
+    border: '1px solid rgba(100,255,218,0.3)',
+    borderBottom: 'none',
+    background: 'rgba(100,255,218,0.08)',
+    color: '#64ffda',
+    fontSize: '13px',
+    fontWeight: 600,
+    cursor: 'pointer',
+    transition: 'all 0.2s',
   },
 };
