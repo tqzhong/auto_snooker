@@ -1,10 +1,9 @@
 // ============================================================
 // Centralized Re-spotting Logic (WPBSA Rules)
-// Handles ball placement when balls need to be returned to the table
+// Based on Section 3(c) of the WPBSA Rules of Snooker
 // ============================================================
 
 import type { Ball, BallColor, Vec2 } from '../types';
-import { COLORS_ORDER } from '../types';
 import { BALL_RADIUS, TABLE_LENGTH, TABLE_WIDTH, CENTER_Y, BAULK_LINE_X, D_ZONE_RADIUS } from './constants';
 
 /** Designated spot positions for each color ball */
@@ -17,7 +16,7 @@ const COLOR_SPOTS: Record<string, Vec2> = {
   black:  { x: 324, y: CENTER_Y },
 };
 
-const COLORS_REVERSED: BallColor[] = [...COLORS_ORDER].reverse();
+const COLORS_REVERSED: BallColor[] = ['black', 'pink', 'blue', 'brown', 'green', 'yellow'];
 
 function distanceBetween(a: Vec2, b: Vec2): number {
   const dx = b.x - a.x;
@@ -33,10 +32,11 @@ function isSpotOccupied(spot: Vec2, balls: Ball[]): boolean {
 
 /**
  * Find the correct re-spot position for a color ball.
- * WPBSA rules:
+ * WPBSA Section 3(c)(i):
  * 1. Place on the ball's own designated spot
  * 2. If occupied, place on the highest-value available spot
- * 3. If all spots occupied, place as close to own spot as possible on the center line
+ * 3. If all spots occupied, place as close to its own spot as possible
+ *    between its spot and the nearest cushion, along the centre line
  */
 export function findReSpotPosition(color: BallColor, balls: Ball[]): Vec2 {
   const ownSpot = COLOR_SPOTS[color];
@@ -45,7 +45,7 @@ export function findReSpotPosition(color: BallColor, balls: Ball[]): Vec2 {
   // 1. Try own spot
   if (!isSpotOccupied(ownSpot, balls)) return { ...ownSpot };
 
-  // 2. Try highest-value available spot (black > pink > blue > brown > green > yellow)
+  // 2. Try highest-value available spot
   for (const candidate of COLORS_REVERSED) {
     if (candidate === color) continue;
     const spot = COLOR_SPOTS[candidate];
@@ -63,9 +63,8 @@ export function findReSpotPosition(color: BallColor, balls: Ball[]): Vec2 {
  */
 function findClosestAvailableOnCenterLine(targetSpot: Vec2, balls: Ball[]): Vec2 {
   const y = CENTER_Y;
-  const minDist = BALL_RADIUS * 2.1;
 
-  // Try positions progressively further from the spot toward the top cushion (x=0)
+  // Try positions progressively further from the spot toward both cushions
   for (let offset = 0; offset < TABLE_LENGTH; offset += BALL_RADIUS) {
     const candidateLeft = { x: targetSpot.x - offset, y };
     const candidateRight = { x: targetSpot.x + offset, y };
@@ -78,7 +77,7 @@ function findClosestAvailableOnCenterLine(targetSpot: Vec2, balls: Ball[]): Vec2
     }
   }
 
-  // Fallback: return the spot itself (shouldn't happen in normal play)
+  // Fallback: return the spot itself
   return { ...targetSpot };
 }
 

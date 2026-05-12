@@ -1,5 +1,6 @@
 // ============================================================
 // Snooker Rules Engine — Full WPBSA 2024-25 Implementation
+// Based on the official WPBSA Rules of Snooker
 // ============================================================
 
 import type { Ball, BallColor, GameState, GamePhase, ShotParams, ShotResult, ShotRecord, Foul } from '../types';
@@ -78,6 +79,7 @@ export function evaluateShot(
 ): ShotResult {
   const fouls: Foul[] = [];
   let pointsScored = 0;
+  let foulPoints = 0;
   const pottedBalls: Ball[] = [];
 
   // --- FOUL CHECKS ---
@@ -130,7 +132,6 @@ export function evaluateShot(
   }
 
   // 5. Touching ball violation (Section 4)
-  // If cue ball was touching a ball at the start of the shot, validate play-away
   if (state.touchingBalls.length > 0) {
     const touchingViolation = checkTouchingBallViolation(state, simResult);
     if (touchingViolation) {
@@ -150,25 +151,10 @@ export function evaluateShot(
     });
   }
 
-  // --- Calculate foul penalty ---
-  // Per WPBSA: foul points = max of all fouls, minimum 4, maximum 7
-  let foulPoints = 0;
-  if (fouls.length > 0) {
-    const pointFouls = fouls.filter(f => f.points > 0);
-    if (pointFouls.length > 0) {
-      foulPoints = Math.max(...pointFouls.map(f => f.points));
-    }
-    for (const potted of simResult.pottedBalls) {
-      if (potted.color !== 'white') {
-        foulPoints = Math.max(foulPoints, BALL_VALUES[potted.color as BallColor] || 0);
-      }
-    }
-    foulPoints = Math.max(foulPoints, MIN_FOUL_POINTS);
-    foulPoints = Math.min(foulPoints, MAX_FOUL_POINTS);
-  }
-
-  // --- SCORING (only if no fouls) ---
-  if (fouls.filter(f => f.points > 0).length === 0) {
+  // --- SCORING (only if no fouls that result in penalty) ---
+  const hasScoringFoul = fouls.some(f => f.points > 0);
+  if (!hasScoringFoul) {
+    // Valid shot - count potted balls
     for (const potted of simResult.pottedBalls) {
       if (potted.color === 'white') continue;
 
@@ -197,6 +183,7 @@ export function evaluateShot(
           pointsScored += BALL_VALUES[potted.color as BallColor];
           pottedBalls.push(potted);
         } else if (nextColor) {
+          // Wrong color potted in colors phase - this is a foul
           const penalty = Math.max(
             BALL_VALUES[nextColor],
             BALL_VALUES[potted.color as BallColor],
@@ -211,6 +198,55 @@ export function evaluateShot(
         }
       }
     }
+  }
+
+  // 7. WPBSA Section 3(g)(i): If a player plays at a Red and simultaneously
+  //    pots a Colour, the points for the Colour do not count and the Colour is spotted.
+  //    This is a foul.
+  if (!hasScoringFoul && (state.phase === 'reds_phase' || state.phase === 'break_off')) {
+    const redsOnTable = state.balls.filter(b => b.color === 'red' && !b.pocketed).length;
+    const colorAfterRed = wasColorAfterRedShot(state);
+
+    if (redsOnTable > 0 && !colorAfterRed) {
+      // Player was playing at reds - check if any color was potted simultaneously
+      const colorsPotted = simResult.pottedBalls.filter(b => b.color !== 'red' && b.color !== 'white');
+      const redsPotted = simResult.pottedBalls.filter(b => b.color === 'red');
+
+      if (colorsPotted.length > 0 && redsPotted.length > 0) {
+        // Section 3(g)(i): Playing at red, simultaneously potted a colour
+        // The colour points do not count, colour is spotted, AND it's a foul
+        const penalty = Math.max(
+          MIN_FOUL_POINTS,
+          ...colorsPotted.map(c => BALL_VALUES[c.color as BallColor])
+        );
+        fouls.push({
+          type: 'wrong_ball_first_contact',
+          points: penalty,
+          description: `击红球时意外带入${colorsPotted.map(c => c.color).join('、')}球，罚${penalty}分`,
+        });
+        foulPoints = Math.max(foulPoints, penalty);
+
+        // Remove the color pots from scored points
+        for (const colorBall of colorsPotted) {
+          pointsScored -= BALL_VALUES[colorBall.color as BallColor];
+        }
+      }
+    }
+  }
+
+  // Calculate final foul penalty (max of all fouls, min 4, max 7)
+  if (fouls.length > 0) {
+    const pointFouls = fouls.filter(f => f.points > 0);
+    if (pointFouls.length > 0) {
+      foulPoints = Math.max(...pointFouls.map(f => f.points));
+    }
+    for (const potted of simResult.pottedBalls) {
+      if (potted.color !== 'white') {
+        foulPoints = Math.max(foulPoints, BALL_VALUES[potted.color as BallColor] || 0);
+      }
+    }
+    foulPoints = Math.max(foulPoints, MIN_FOUL_POINTS);
+    foulPoints = Math.min(foulPoints, MAX_FOUL_POINTS);
   }
 
   return {
@@ -391,7 +427,7 @@ export function applyShotResult(
   }
 
   // --- RE-SPOT COLORS ---
-  // WPBSA Rule 7: colours re-spotted while reds remain
+  // WPBSA Section 3(c): colours are spotted while reds remain on the table
   const redsOnTableBefore = state.balls.filter(b => b.color === 'red' && !b.pocketed).length;
   const colorAfterRed = wasColorAfterRedShot(state);
   if (redsOnTableBefore > 0 || colorAfterRed) {
@@ -592,6 +628,3 @@ function checkTouchingBallViolation(state: GameState, simResult: SimulationResul
 
   return null;
 }
-
-// Re-export for backward compatibility
-// createInitialBalls is imported from physics.ts at the top of this file
