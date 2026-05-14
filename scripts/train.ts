@@ -3,19 +3,16 @@
 // Training CLI — Run agent self-play training
 // ============================================================
 
-import { AggressiveAgent } from '../src/ai/agents/aggressive-agent';
-import { DefensiveAgent } from '../src/ai/agents/defensive-agent';
-import { BalancedAgent } from '../src/ai/agents/balanced-agent';
-import { NeuralAgent } from '../src/ai/agents/neural-agent';
+import { MasterSnookerAgent } from '../src/ai/agents/master-agent';
 import { createTrainer, formatTrainingResults } from '../src/training/trainer';
 import { createRoundRobinPairs, createSelfPlayPairs } from '../src/training/matcher';
+import { optimizeMasterParams } from '../src/training/master-optimizer';
 import { writeFileSync } from 'fs';
 
 const AGENTS: Record<string, () => any> = {
-  aggressive: () => new AggressiveAgent(),
-  defensive: () => new DefensiveAgent(),
-  balanced: () => new BalancedAgent(),
-  neural: () => new NeuralAgent('Neural-v1'),
+  master: () => new MasterSnookerAgent('Master'),
+  'master-a': () => new MasterSnookerAgent('Master-A'),
+  'master-b': () => new MasterSnookerAgent('Master-B'),
 };
 
 async function main() {
@@ -26,6 +23,10 @@ async function main() {
   let frames = 10;
   let mode: 'round-robin' | 'self-play' = 'round-robin';
   let outputFile = 'training-results.json';
+  let optimizeMaster = false;
+  let generations = 5;
+  let populationSize = 4;
+  let maxShots = 420;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -41,27 +42,71 @@ async function main() {
       case '--output':
         outputFile = args[++i];
         break;
+      case '--optimize-master':
+        optimizeMaster = true;
+        break;
+      case '--generations':
+        generations = parseInt(args[++i], 10);
+        break;
+      case '--population':
+        populationSize = parseInt(args[++i], 10);
+        break;
+      case '--max-shots':
+        maxShots = parseInt(args[++i], 10);
+        break;
       case '--help':
         console.log(`
 Auto Snooker Training CLI
 
 Usage:
-  npm run train -- --agents aggressive,defensive,balanced --frames 100
+  npm run train -- --agents master-a,master-b --frames 100
 
 Options:
-  --agents <names>    Comma-separated agent names: aggressive, defensive, balanced, neural
+  --agents <names>    Comma-separated agent names: master, master-a, master-b
   --frames <n>        Number of frames per matchup (default: 10)
   --mode <mode>       'round-robin' or 'self-play' (default: round-robin)
   --output <file>     Output JSON file (default: training-results.json)
+  --optimize-master   Tune Master scoring weights for high-break self-play
+  --generations <n>   Generations for --optimize-master (default: 5)
+  --population <n>    Candidates per generation for optimization (default: 4)
+  --max-shots <n>     Max shots per optimization frame (default: 420)
   --help              Show this help
 `);
         process.exit(0);
     }
   }
 
+  if (optimizeMaster) {
+    console.log(`🎱 Auto Snooker Master Optimization`);
+    console.log(`   Generations: ${generations}`);
+    console.log(`   Frames per eval: ${frames}`);
+    console.log('');
+
+    const result = await optimizeMasterParams({
+      generations,
+      framesPerEval: frames,
+      populationSize,
+      maxShotsPerFrame: maxShots,
+      onProgress: (generation, bestFitness, bestParams) => {
+        process.stdout.write(`\r   Generation ${generation + 1}/${generations} best fitness ${bestFitness.toFixed(1)}`);
+      },
+    });
+
+    console.log('\n');
+    console.log(`   Best fitness: ${result.bestFitness.toFixed(1)}`);
+    console.log(`   Highest break: ${result.bestStats.highestBreak}`);
+    console.log(`   Century breaks: ${result.bestStats.centuryBreaks}`);
+    console.log(`   Pot success: ${(result.bestStats.potSuccessRate * 100).toFixed(1)}%`);
+    console.log(`   Foul rate: ${(result.bestStats.foulRate * 100).toFixed(1)}%`);
+
+    writeFileSync(outputFile, JSON.stringify(result, null, 2));
+    console.log(`   Results saved to ${outputFile}`);
+    return;
+  }
+
   // Default agents
   if (agentNames.length === 0) {
-    agentNames.push('aggressive', 'defensive', 'balanced');
+    agentNames.push('master-a', 'master-b');
   }
 
   // Create agents

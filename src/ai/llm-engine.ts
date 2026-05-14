@@ -15,12 +15,15 @@ import {
 } from '../engine/physics';
 import type { SimulationResult } from '../engine/physics';
 import { maxPointsRemaining } from '../engine/rules';
+import { MasterSnookerAgent } from './agents/master-agent';
+import { getLLMMacroAdvice } from './llm-strategist';
 
 // API config from environment
 const ENV = import.meta.env || {};
 const API_KEY = ENV.VITE_AI_API_KEY || '';
 const BASE_URL = ENV.VITE_AI_BASE_URL || 'https://token-plan-cn.xiaomimimo.com/v1';
 const MODEL = ENV.VITE_AI_MODEL || 'mimo-v2.5-pro';
+const ENABLE_LLM_STRATEGY = ENV.VITE_ENABLE_LLM_STRATEGY === 'true';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -790,64 +793,15 @@ function getAvailableTargets(state: GameState): { description: string; ballIds: 
 // Main decision function: LLM picks target → physics calculates shot
 // ============================================================
 
-export async function getAIMoveDecision(state: GameState): Promise<LLMDecision> {
-  // Step 1: Get strategy from LLM (or fallback)
-  const strategy = await getLLMStrategy(state);
-
-  // Step 2: Find the target ball
-  const targetBall = state.balls.find(b => b.id === strategy.targetBallId && !b.pocketed);
-  if (!targetBall) {
-    return getFallbackDecision(state);
-  }
-
-  const directContact = findContactAngle(state, targetBall);
-  const forcedAttack = strategy.strategy !== 'attack' && getPotLineCount(state, targetBall) > 0;
-
-  // Step 3: Calculate precise angle via physics, use LLM's power
-  if (strategy.strategy === 'attack' || forcedAttack) {
-    const shot = calculateBestShot(state, targetBall, strategy.power, strategy.spinX, strategy.spinY);
-    if (shot) {
-      const detailPrefix = forcedAttack
-        ? `agent选择${describeStrategy(strategy.strategy)}，但当前目标有可进袋线路，进攻风格强制转进攻。`
-        : '';
-      return {
-        targetBallId: strategy.targetBallId,
-        aimAngle: shot.angle,
-        power: shot.power,
-        spinX: strategy.spinX,
-        spinY: strategy.spinY,
-        strategy: 'attack',
-        reasoning: formatDecisionAnalysis(strategy, targetBall, 'attack', `${detailPrefix}进攻袋口${shot.pocketIndex}，ghost-ball线路和目标球进袋路线均无遮挡。`),
-      };
-    }
-    // No pot possible → find a valid contact angle, use as safety
-    if (!directContact) {
-      return getFallbackDecision(state);
-    }
-    return {
-      targetBallId: strategy.targetBallId,
-      aimAngle: directContact.angle,
-      power: Math.max(0.3, strategy.power * 0.8),
-      spinX: strategy.spinX,
-      spinY: strategy.spinY,
-      strategy: 'safety',
-      reasoning: formatDecisionAnalysis(strategy, targetBall, 'safety', '未找到可验证进球袋口，改为先合法碰目标球并控制母球。'),
-    };
-  }
-
-  // Safety or snooker: find a valid contact angle avoiding obstacles
-  if (!directContact) {
-    return getFallbackDecision(state);
-  }
-  return {
-    targetBallId: strategy.targetBallId,
-    aimAngle: directContact.angle,
-    power: strategy.power,
-    spinX: strategy.spinX,
-    spinY: strategy.spinY,
-    strategy: strategy.strategy,
-    reasoning: formatDecisionAnalysis(strategy, targetBall, strategy.strategy, '按agent选择执行防守/做球，物理引擎自动取合法第一碰撞角度。'),
-  };
+export async function getAIMoveDecision(
+  state: GameState,
+  tableImageDataUrl?: string | null,
+): Promise<LLMDecision> {
+  const macroAdvice = ENABLE_LLM_STRATEGY
+    ? await getLLMMacroAdvice(state, tableImageDataUrl)
+    : null;
+  const master = new MasterSnookerAgent('Master', {}, macroAdvice);
+  return master.decide(state);
 }
 
 /** Get LLM strategy choice only (no angle/power) */

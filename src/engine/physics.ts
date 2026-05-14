@@ -106,14 +106,17 @@ function applyCueBallSpinOnContact(
   const spin = getSpin(cue);
 
   // Top/back spin changes the cue-ball follow/draw along the object-ball line.
-  // Side spin creates a smaller tangent separation after contact.
-  const followKick = spin.y * speedBefore * 0.36;
-  const sideKick = spin.x * speedBefore * 0.18;
+  // Draw is a little stronger immediately after impact; follow persists longer.
+  // This keeps long screw/follow shots useful instead of every full-ball contact
+  // becoming a dead stop.
+  const followFactor = spin.y >= 0 ? 0.48 : 0.58;
+  const followKick = spin.y * speedBefore * followFactor;
+  const sideKick = spin.x * speedBefore * 0.2;
   cue.vel.x += normalFromCue.x * followKick + tangent.x * sideKick;
   cue.vel.y += normalFromCue.y * followKick + tangent.y * sideKick;
 
   // Collision consumes part of the stored spin while preserving enough side for cushions.
-  setSpin(cue, spin.x * 0.82, spin.y * 0.45);
+  setSpin(cue, spin.x * 0.82, spin.y * 0.38);
 }
 
 /** Bounce ball off cushions */
@@ -172,7 +175,7 @@ function applyFriction(ball: Ball, dt: number): void {
   }
   const spin = getSpin(ball);
   const spinDrag = ball.color === 'white'
-    ? 1 + Math.max(0, -spin.y) * 0.18 - Math.max(0, spin.y) * 0.08
+    ? 1 + Math.max(0, -spin.y) * 0.12 - Math.max(0, spin.y) * 0.1
     : 1;
   const frictionForce = FRICTION_DECELERATION * spinDrag * dt;
   const newSpeed = Math.max(0, speed - frictionForce);
@@ -181,7 +184,7 @@ function applyFriction(ball: Ball, dt: number): void {
   ball.vel.y *= ratio;
 
   if (ball.color === 'white') {
-    setSpin(ball, spin.x * Math.exp(-1.4 * dt), spin.y * Math.exp(-1.8 * dt));
+    setSpin(ball, spin.x * Math.exp(-1.05 * dt), spin.y * Math.exp(-0.42 * dt));
   }
 }
 

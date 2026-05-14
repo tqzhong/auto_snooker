@@ -3,7 +3,7 @@
 // Canvas-based snooker table with physics simulation
 // ============================================================
 
-import { useRef, useEffect, useCallback } from 'react';
+import { forwardRef, useImperativeHandle, useRef, useEffect } from 'react';
 import type { Ball, Vec2 } from '../types';
 import { TableRenderer } from '../renderer/table-renderer';
 
@@ -13,9 +13,27 @@ interface GameTableProps {
   playerName: string;
 }
 
-export function GameTable({ balls, aimLine, playerName }: GameTableProps) {
+export interface GameTableHandle {
+  getSnapshotDataUrl: () => string | null;
+}
+
+export const GameTable = forwardRef<GameTableHandle, GameTableProps>(function GameTable(
+  { balls, aimLine, playerName },
+  ref,
+) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<TableRenderer | null>(null);
+
+  useImperativeHandle(ref, () => ({
+    getSnapshotDataUrl: () => {
+      if (!canvasRef.current) return null;
+      try {
+        return canvasRef.current.toDataURL('image/png');
+      } catch {
+        return null;
+      }
+    },
+  }), []);
 
   useEffect(() => {
     if (canvasRef.current && !rendererRef.current) {
@@ -41,7 +59,7 @@ export function GameTable({ balls, aimLine, playerName }: GameTableProps) {
       />
     </div>
   );
-}
+});
 
 const styles: Record<string, React.CSSProperties> = {
   container: {

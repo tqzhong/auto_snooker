@@ -9,7 +9,7 @@ import { createInitialBalls } from './engine/physics';
 import { createInitialGameState, evaluateShot, applyShotResult } from './engine/rules';
 import { simulateShot, applyShot, angleBetween } from './engine/physics';
 import { getAIMoveDecision } from './ai/llm-engine';
-import { GameTable } from './components/GameTable';
+import { GameTable, type GameTableHandle } from './components/GameTable';
 import { Scoreboard } from './components/Scoreboard';
 import { ShotHistory } from './components/ShotHistory';
 import { TrainingPanel } from './components/TrainingPanel';
@@ -33,6 +33,7 @@ export default function App() {
 
   const tickRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationRef = useRef<number | null>(null);
+  const tableRef = useRef<GameTableHandle | null>(null);
   const gameStateRef = useRef(gameState);
   gameStateRef.current = gameState;
 
@@ -88,7 +89,8 @@ export default function App() {
 
     try {
       // Get AI decision
-      const decision = await getAIMoveDecision(state);
+      const tableImage = tableRef.current?.getSnapshotDataUrl() ?? null;
+      const decision = await getAIMoveDecision(state, tableImage);
       setGameState(prev => ({
         ...prev,
         statusMessage: `AI决策: ${decision.reasoning}`,
@@ -290,6 +292,7 @@ export default function App() {
         {/* Center: Table */}
         <div style={styles.tableContainer}>
           <GameTable
+            ref={tableRef}
             balls={animatedBalls ?? gameState.balls}
             aimLine={currentAim}
             playerName={gameState.players[gameState.currentPlayerIndex].name}

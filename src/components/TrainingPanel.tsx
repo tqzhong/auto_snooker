@@ -5,19 +5,14 @@
 import { useState, useCallback, useRef } from 'react';
 import type { AgentStats, FrameRecord } from '../training/types';
 import type { Agent } from '../ai/agents/agent';
-import { AggressiveAgent } from '../ai/agents/aggressive-agent';
-import { DefensiveAgent } from '../ai/agents/defensive-agent';
-import { BalancedAgent } from '../ai/agents/balanced-agent';
-import { NeuralAgent } from '../ai/agents/neural-agent';
+import { MasterSnookerAgent } from '../ai/agents/master-agent';
 import { createTrainer, formatTrainingResults } from '../training/trainer';
 import { createRoundRobinPairs, createSelfPlayPairs, createChampionPairs } from '../training/matcher';
 import { runHeadlessFrame } from '../engine/game-loop';
 
 const AGENT_FACTORIES: Record<string, () => Agent> = {
-  aggressive: () => new AggressiveAgent(),
-  defensive: () => new DefensiveAgent(),
-  balanced: () => new BalancedAgent(),
-  neural: () => new NeuralAgent('Neural-v1'),
+  'master-a': () => new MasterSnookerAgent('Master-A'),
+  'master-b': () => new MasterSnookerAgent('Master-B'),
 };
 
 interface TrainingState {
@@ -30,7 +25,7 @@ interface TrainingState {
 }
 
 export function TrainingPanel() {
-  const [selectedAgents, setSelectedAgents] = useState<string[]>(['aggressive', 'defensive']);
+  const [selectedAgents, setSelectedAgents] = useState<string[]>(['master-a', 'master-b']);
   const [frameCount, setFrameCount] = useState(10);
   const [mode, setMode] = useState<'round-robin' | 'self-play'>('round-robin');
   const [state, setState] = useState<TrainingState>({
@@ -91,10 +86,7 @@ export function TrainingPanel() {
               }}
               onClick={() => toggleAgent(name)}
             >
-              {name === 'aggressive' && '⚔️'}
-              {name === 'defensive' && '🛡️'}
-              {name === 'balanced' && '⚖️'}
-              {name === 'neural' && '🧠'}
+              {name.startsWith('master') && '🎯'}
               {' '}{name}
             </button>
           ))}

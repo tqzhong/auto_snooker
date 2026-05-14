@@ -3,10 +3,7 @@
 // Evaluate CLI — Tournament evaluation of agents
 // ============================================================
 
-import { AggressiveAgent } from '../src/ai/agents/aggressive-agent';
-import { DefensiveAgent } from '../src/ai/agents/defensive-agent';
-import { BalancedAgent } from '../src/ai/agents/balanced-agent';
-import { NeuralAgent } from '../src/ai/agents/neural-agent';
+import { MasterSnookerAgent } from '../src/ai/agents/master-agent';
 import { runHeadlessMatch, type FrameResult } from '../src/engine/game-loop';
 import { calculateAgentStats, formatStats } from '../src/training/evaluator';
 import type { FrameRecord, AgentStats } from '../src/training/types';
@@ -25,10 +22,9 @@ function toFrameRecord(fr: FrameResult): FrameRecord {
 }
 
 const AGENTS: Record<string, () => Agent> = {
-  aggressive: () => new AggressiveAgent(),
-  defensive: () => new DefensiveAgent(),
-  balanced: () => new BalancedAgent(),
-  neural: () => new NeuralAgent('Neural-v1'),
+  master: () => new MasterSnookerAgent('Master'),
+  'master-a': () => new MasterSnookerAgent('Master-A'),
+  'master-b': () => new MasterSnookerAgent('Master-B'),
 };
 
 async function main() {
@@ -50,7 +46,7 @@ async function main() {
 Auto Snooker Evaluate CLI
 
 Usage:
-  npm run evaluate -- --agents aggressive,defensive,balanced --best-of 5
+  npm run evaluate -- --agents master-a,master-b --best-of 5
 
 Options:
   --agents <names>    Comma-separated agent names
@@ -62,7 +58,7 @@ Options:
   }
 
   if (agentNames.length === 0) {
-    agentNames.push('aggressive', 'defensive', 'balanced');
+    agentNames.push('master-a', 'master-b');
   }
 
   const agents = agentNames.map(name => {
