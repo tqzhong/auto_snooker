@@ -8,6 +8,7 @@ import { BALL_VALUES, COLORS_ORDER, MIN_FOUL_POINTS } from '../types';
 import {
   TABLE_LENGTH, TABLE_WIDTH, BALL_RADIUS,
   POCKET_POSITIONS, POCKET_RADII,
+  FRICTION_DECELERATION, MAX_CUE_SPEED, MAX_SHOT_POWER,
 } from '../engine/constants';
 import { distanceBetween, angleBetween, simulateShot, applyShot } from '../engine/physics';
 import type { SimulationResult } from '../engine/physics';
@@ -51,12 +52,20 @@ export function calculatePotAngle(cueBall: Ball, targetBall: Ball, pocketPos: Ve
   return angleBetween(cueBall.pos, ghost);
 }
 
+export function potCutAngleDegrees(cueBall: Ball, targetBall: Ball, pocketPos: Vec2): number {
+  const ghost = calculateGhostBallPosition(targetBall, pocketPos);
+  const incomingAngle = angleBetween(cueBall.pos, ghost ?? targetBall.pos);
+  const objectAngle = angleBetween(targetBall.pos, pocketPos);
+  let diff = incomingAngle - objectAngle;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return Math.abs(diff) * 180 / Math.PI;
+}
+
 /** Calculate required power from distance (friction-based) */
 export function distanceToPower(dist: number): number {
-  const FRICTION = 450;
-  const MAX_SPEED = 5000;
-  const requiredSpeed = Math.sqrt(2 * FRICTION * dist) * 1.3;
-  return Math.max(0.15, Math.min(1.0, requiredSpeed / MAX_SPEED));
+  const requiredSpeed = Math.sqrt(2 * FRICTION_DECELERATION * dist) * 1.22;
+  return Math.max(0.15, Math.min(MAX_SHOT_POWER, requiredSpeed / MAX_CUE_SPEED));
 }
 
 // ============================================================
@@ -130,6 +139,17 @@ function isBallPathClear(
 export function isPotLineAvailable(cueBall: Ball, targetBall: Ball, pocketPos: Vec2, allBalls: Ball[]): boolean {
   const ghost = calculateGhostBallPosition(targetBall, pocketPos);
   if (!ghost || !isPointInsidePlayableArea(ghost, BALL_RADIUS * 0.5)) return false;
+  const pocketIndex = POCKET_POSITIONS.findIndex(pos => pos[0] === pocketPos.x && pos[1] === pocketPos.y);
+  const isMiddle = pocketIndex === 1 || pocketIndex === 4;
+  const cutDegrees = potCutAngleDegrees(cueBall, targetBall, pocketPos);
+  const cueDist = distanceBetween(cueBall.pos, targetBall.pos);
+  const objectDist = distanceBetween(targetBall.pos, pocketPos);
+  const targetCushionDist = Math.min(targetBall.pos.x, TABLE_LENGTH - targetBall.pos.x, targetBall.pos.y, TABLE_WIDTH - targetBall.pos.y);
+  const maxCut = isMiddle ? 38 : 56;
+  if (cutDegrees > maxCut) return false;
+  if (isMiddle && objectDist > 980 && cutDegrees > 26) return false;
+  if (isMiddle && targetCushionDist < 110 && cutDegrees > 18) return false;
+  if (cueDist > 1500 && cutDegrees > (isMiddle ? 24 : 42)) return false;
   const angle = angleBetween(cueBall.pos, ghost);
   if (!shotHitsTargetFirst(cueBall, targetBall, allBalls, angle)) return false;
   return isBallPathClear(
@@ -224,7 +244,7 @@ export function calculateBestShot(
     ];
 
     for (const power of powerLevels) {
-      const clamped = Math.max(0.15, Math.min(1.0, power));
+      const clamped = Math.max(0.15, Math.min(MAX_SHOT_POWER, power));
       const { potted } = simulateAndCheckPot(state.balls, angle, clamped, spinX, spinY, targetBall.id);
       if (potted) return { angle, power: clamped, pocketIndex: pocket.index };
     }
@@ -244,7 +264,7 @@ export function calculateSafetyShot(
   if (!contact) return null;
 
   const dist = distanceBetween(cueBall.pos, targetBall.pos);
-  const power = Math.max(0.25, Math.min(0.7, preferredPower || distanceToPower(dist) * 0.7));
+  const power = Math.max(0.25, Math.min(0.9, preferredPower || distanceToPower(dist) * 0.7));
   return { angle: contact.angle, power };
 }
 
@@ -324,7 +344,7 @@ export function findAnyLegalContactShot(
   }
 
   // Search for cushion escape
-  const powerLevels = [Math.max(0.35, Math.min(0.9, preferredPower || 0.55)), 0.5, 0.7, 0.9];
+  const powerLevels = [Math.max(0.35, Math.min(1.15, preferredPower || 0.55)), 0.5, 0.7, 0.9, 1.12];
   const steps = 240;
   const activeBalls = state.balls.filter(b => !b.pocketed);
 

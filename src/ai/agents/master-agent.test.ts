@@ -4,7 +4,7 @@ import { BALL_RADIUS, CENTER_Y } from '../../engine/constants';
 import { applyShot, simulateShot, createInitialBalls } from '../../engine/physics';
 import { createInitialGameState } from '../../engine/rules';
 import { MasterSnookerAgent } from './master-agent';
-import { getLegalTargetBalls } from '../strategy';
+import { getLegalTargetBalls, isPotLineAvailable } from '../strategy';
 
 function makeBall(id: number, color: Ball['color'], x: number, y: number): Ball {
   return {
@@ -86,5 +86,51 @@ describe('MasterSnookerAgent', () => {
     );
 
     expect(decisions.some(d => Math.abs(d.spinY) >= 0.42 || Math.abs(d.spinX) >= 0.32)).toBe(true);
+  });
+
+  it('rejects unrealistic middle-pocket cuts before candidate generation', () => {
+    const cue = makeBall(0, 'white', 2300, 950);
+    const red = makeBall(1, 'red', 1665, 120);
+    const state = makeState([
+      cue,
+      red,
+      makeBall(2, 'black', 500, CENTER_Y),
+    ], { phase: 'reds_phase' });
+    const middlePocket = { x: 3569 / 2, y: 0 };
+
+    expect(isPotLineAvailable(cue, red, middlePocket, state.balls)).toBe(false);
+  });
+
+  it('attacks instead of playing safe during the colors phase when a pot is available', async () => {
+    const pocket = { x: 22, y: 22 };
+    const yellow = makeBall(1, 'yellow', 120, 120);
+    const dx = pocket.x - yellow.pos.x;
+    const dy = pocket.y - yellow.pos.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    const nx = dx / len;
+    const ny = dy / len;
+    const ghost = {
+      x: yellow.pos.x - nx * BALL_RADIUS * 2,
+      y: yellow.pos.y - ny * BALL_RADIUS * 2,
+    };
+    const cue = makeBall(0, 'white', ghost.x - nx * 500, ghost.y - ny * 500);
+    const state = makeState([
+      cue,
+      yellow,
+      makeBall(2, 'green', 580, CENTER_Y),
+    ], {
+      phase: 'colors_phase',
+      nextColorToPot: 'yellow',
+      redsRemaining: 0,
+      players: [
+        { name: 'A', score: 90, currentBreak: 0, highestBreak: 0 },
+        { name: 'B', score: 30, currentBreak: 0, highestBreak: 0 },
+      ],
+    });
+
+    const decision = await new MasterSnookerAgent('Master', { creativity: 0 }).decide(state);
+
+    expect(decision.strategy).toBe('attack');
+    expect(decision.targetBallId).toBe(yellow.id);
   });
 });

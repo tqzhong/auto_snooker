@@ -152,6 +152,17 @@ describe('simulateShot', () => {
     expect(result.pottedBalls.some(b => b.id === 1)).toBe(true);
   });
 
+  it('does not swallow a badly off-center middle-pocket attempt', () => {
+    const balls = [
+      makeBall(0, 'white', TABLE_LENGTH / 2 - 700, 540),
+      makeBall(1, 'red', TABLE_LENGTH / 2 - 120, 82),
+      makeBall(2, 'red', 3000, CENTER_Y),
+    ];
+    applyShot(balls, angleBetween(balls[0].pos, balls[1].pos), 0.42, 0, 0);
+    const result = simulateShot(balls, { generateFrames: false });
+    expect(result.pottedBalls.some(b => b.id === 1)).toBe(false);
+  });
+
   it('stops all balls within simulation time', () => {
     const balls = createInitialBalls();
     applyShot(balls, 0, 0.3, 0, 0);
@@ -217,5 +228,59 @@ describe('friction', () => {
     const cue = result.finalBalls.find(b => b.color === 'white')!;
     const speed = Math.sqrt(cue.vel.x ** 2 + cue.vel.y ** 2);
     expect(speed).toBeLessThan(1);
+  });
+});
+
+describe('cue-ball spin physics', () => {
+  function straightObjectBallShot(spinY: number): Vec2 {
+    const balls = [
+      makeBall(0, 'white', 900, CENTER_Y),
+      makeBall(1, 'red', 1180, CENTER_Y),
+      makeBall(2, 'red', 2600, CENTER_Y + 260),
+    ];
+    applyShot(balls, 0, 0.38, 0, spinY);
+    const result = simulateShot(balls, { generateFrames: false });
+    return result.finalBalls.find(b => b.color === 'white')!.pos;
+  }
+
+  it('makes follow travel farther forward than draw after full-ball contact', () => {
+    const draw = straightObjectBallShot(-0.85);
+    const stun = straightObjectBallShot(0);
+    const follow = straightObjectBallShot(0.85);
+
+    expect(follow.x).toBeGreaterThan(stun.x + 80);
+    expect(draw.x).toBeLessThan(stun.x - 40);
+  });
+
+  it('curves the cue ball when side spin is applied', () => {
+    const center = [
+      makeBall(0, 'white', 1000, CENTER_Y),
+    ];
+    const side = [
+      makeBall(0, 'white', 1000, CENTER_Y),
+    ];
+
+    applyShot(center, 0, 0.32, 0, 0);
+    applyShot(side, 0, 0.32, 0.9, 0.45);
+    const centerResult = simulateShot(center, { generateFrames: false });
+    const sideResult = simulateShot(side, { generateFrames: false });
+    const centerCue = centerResult.finalBalls.find(b => b.color === 'white')!;
+    const sideCue = sideResult.finalBalls.find(b => b.color === 'white')!;
+
+    expect(Math.abs(sideCue.pos.y - centerCue.pos.y)).toBeGreaterThan(35);
+  });
+
+  it('changes cushion exit angle with side spin', () => {
+    const plain = [makeBall(0, 'white', 900, 180)];
+    const side = [makeBall(0, 'white', 900, 180)];
+
+    applyShot(plain, -Math.PI / 2, 0.38, 0, 0);
+    applyShot(side, -Math.PI / 2, 0.38, 0.9, 0);
+    const plainResult = simulateShot(plain, { generateFrames: false });
+    const sideResult = simulateShot(side, { generateFrames: false });
+    const plainCue = plainResult.finalBalls.find(b => b.color === 'white')!;
+    const sideCue = sideResult.finalBalls.find(b => b.color === 'white')!;
+
+    expect(Math.abs(sideCue.pos.x - plainCue.pos.x)).toBeGreaterThan(70);
   });
 });

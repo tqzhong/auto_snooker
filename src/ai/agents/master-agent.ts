@@ -12,6 +12,9 @@ import { registerAgent } from './agent';
 export interface MasterAgentParams extends Partial<MasterScoringParams> {
   creativity: number;
   llmInfluence: number;
+  searchDepth: number;
+  beamWidth: number;
+  branchWidth: number;
 }
 
 export class MasterSnookerAgent implements Agent {
@@ -26,6 +29,9 @@ export class MasterSnookerAgent implements Agent {
     this.params = {
       creativity: 0.18,
       llmInfluence: 0,
+      searchDepth: 2,
+      beamWidth: 3,
+      branchWidth: 3,
       difficultyPenalty: 7.2,
       highDifficultyPenalty: 220,
       cueTravelPenalty: 1,
@@ -47,6 +53,9 @@ export class MasterSnookerAgent implements Agent {
     const shot = selectMasterPositionalShot(state, {
       creativity: this.params.creativity,
       macroAdvice,
+      searchDepth: this.params.searchDepth,
+      beamWidth: this.params.beamWidth,
+      branchWidth: this.params.branchWidth,
       scoring: this.params,
     });
     if (shot) {
@@ -94,10 +103,10 @@ export class MasterSnookerAgent implements Agent {
   setParameters(params: Record<string, number>): void {
     for (const [key, value] of Object.entries(params)) {
       if (typeof value !== 'number' || !Number.isFinite(value)) continue;
-      this.params[key as keyof MasterAgentParams] = Math.max(0, Math.min(
-        key === 'highDifficultyPenalty' ? 500 : 2,
-        value,
-      ));
+      const max = key === 'highDifficultyPenalty' ? 500 :
+        key === 'searchDepth' ? 6 :
+          key === 'beamWidth' || key === 'branchWidth' ? 8 : 2;
+      this.params[key as keyof MasterAgentParams] = Math.max(0, Math.min(max, value));
     }
   }
 }

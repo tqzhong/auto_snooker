@@ -7,6 +7,7 @@ import type { Ball, Vec2 } from '../types';
 import {
   BALL_RADIUS, BALL_RESTITUTION, CUSHION_RESTITUTION,
   FRICTION_DECELERATION, MAX_CUE_SPEED,
+  MAX_SHOT_POWER,
   TABLE_LENGTH, TABLE_WIDTH,
   POCKET_POSITIONS, POCKET_RADII,
   PHYSICS_TIMESTEP, MAX_SIMULATION_TIME,
@@ -39,9 +40,21 @@ function checkPocket(ball: Ball): boolean {
     const dx = ball.pos.x - pocketPos.x;
     const dy = ball.pos.y - pocketPos.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < pocketRadius) {
+    const speed = vecLen(ball.vel);
+    const isMiddle = i === 1 || i === 4;
+    const effectiveRadius = pocketRadius * (isMiddle ? 0.58 : 0.72);
+    const jawRadius = pocketRadius * (isMiddle ? 0.92 : 1.08);
+    const vx = ball.vel.x;
+    const vy = ball.vel.y;
+    const speedSafe = Math.max(1, speed);
+    const towardPocket = ((pocketPos.x - ball.pos.x) * vx + (pocketPos.y - ball.pos.y) * vy) / (Math.max(1, dist) * speedSafe);
+    const speedPenalty = speed > 1850 ? Math.min(0.22, (speed - 1850) / 9000) : 0;
+    const captureRadius = Math.max(ball.radius * 0.82, effectiveRadius - speedPenalty * pocketRadius);
+
+    if (dist < captureRadius && (towardPocket > (isMiddle ? 0.1 : -0.05) || dist < ball.radius * 0.9)) {
       return true;
     }
+    if (dist < jawRadius && towardPocket < -0.2) return false;
   }
   return false;
 }
@@ -109,23 +122,23 @@ function applyCueBallSpinOnContact(
   // Draw is a little stronger immediately after impact; follow persists longer.
   // This keeps long screw/follow shots useful instead of every full-ball contact
   // becoming a dead stop.
-  const followFactor = spin.y >= 0 ? 0.48 : 0.58;
+  const followFactor = spin.y >= 0 ? 0.36 : 0.34;
   const followKick = spin.y * speedBefore * followFactor;
-  const sideKick = spin.x * speedBefore * 0.2;
+  const sideKick = spin.x * speedBefore * 0.22;
   cue.vel.x += normalFromCue.x * followKick + tangent.x * sideKick;
   cue.vel.y += normalFromCue.y * followKick + tangent.y * sideKick;
 
   // Collision consumes part of the stored spin while preserving enough side for cushions.
-  setSpin(cue, spin.x * 0.82, spin.y * 0.38);
+  setSpin(cue, spin.x * 0.78, spin.y * 0.48);
 }
 
 /** Bounce ball off cushions */
 function applyCushionReflection(ball: Ball, axis: 'x' | 'y', sign: number): void {
   const spin = getSpin(ball);
   const normalSpeed = axis === 'x' ? Math.abs(ball.vel.x) : Math.abs(ball.vel.y);
-  const restitution = CUSHION_RESTITUTION + Math.abs(spin.x) * 0.04;
-  const sideKick = ball.color === 'white' ? spin.x * normalSpeed * 0.24 : 0;
-  const speedFactor = ball.color === 'white' ? 1 + Math.abs(spin.x) * 0.08 : 1;
+  const restitution = CUSHION_RESTITUTION + Math.abs(spin.x) * 0.035;
+  const sideKick = ball.color === 'white' ? spin.x * normalSpeed * 0.3 : 0;
+  const speedFactor = ball.color === 'white' ? 1 + Math.abs(spin.x) * 0.065 : 1;
 
   if (axis === 'x') {
     ball.vel.x = sign * normalSpeed * restitution;
@@ -136,7 +149,7 @@ function applyCushionReflection(ball: Ball, axis: 'x' | 'y', sign: number): void
   }
 
   if (ball.color === 'white') {
-    setSpin(ball, spin.x * 0.68, spin.y * 0.82);
+    setSpin(ball, spin.x * 0.58, spin.y * 0.78);
   }
 }
 
@@ -165,8 +178,8 @@ function handleCushionBounce(ball: Ball): void {
   }
 }
 
-/** Apply friction to slow ball down */
-function applyFriction(ball: Ball, dt: number): void {
+/** Apply sliding/rolling spin effects and friction. */
+function applyRollingPhysics(ball: Ball, dt: number): void {
   const speed = vecLen(ball.vel);
   if (speed < 0.5) {
     ball.vel = vec2(0, 0);
@@ -174,17 +187,59 @@ function applyFriction(ball: Ball, dt: number): void {
     return;
   }
   const spin = getSpin(ball);
+
+  if (ball.color === 'white') {
+    const ux = ball.vel.x / speed;
+    const uy = ball.vel.y / speed;
+    const lateral = { x: -uy, y: ux };
+
+    // Side spin bends the cue-ball path while it is sliding. This is a
+    // practical 2D approximation of swerve: slower shots and vertical spin
+    // curve more, power shots curve less.
+    const swerveRate = spin.x * (0.26 + Math.abs(spin.y) * 0.34) / (1 + speed / 1700);
+    const turn = clamp(swerveRate * dt, -0.018, 0.018);
+    if (Math.abs(turn) > 0.00001) {
+      const cos = Math.cos(turn);
+      const sin = Math.sin(turn);
+      ball.vel = {
+        x: ball.vel.x * cos - ball.vel.y * sin,
+        y: ball.vel.x * sin + ball.vel.y * cos,
+      };
+    }
+
+    // Top spin helps the cue ball convert sliding into forward roll; draw
+    // initially fights the forward motion and stays available for screw-back
+    // after object-ball contact.
+    const rollKickFactor = spin.y >= 0 ? 0.1 : 0.035;
+    const rollKick = spin.y * FRICTION_DECELERATION * rollKickFactor * dt;
+    ball.vel.x += ux * rollKick;
+    ball.vel.y += uy * rollKick;
+    if (Math.abs(spin.x) > 0.05) {
+      const sideDrift = spin.x * Math.max(0, 1200 - speed) * 0.011 * dt;
+      ball.vel.x += lateral.x * sideDrift;
+      ball.vel.y += lateral.y * sideDrift;
+    }
+  }
+
+  const updatedSpeed = vecLen(ball.vel);
+  if (updatedSpeed < 0.5) {
+    ball.vel = vec2(0, 0);
+    setSpin(ball, 0, 0);
+    return;
+  }
+  const updatedSpin = getSpin(ball);
   const spinDrag = ball.color === 'white'
-    ? 1 + Math.max(0, -spin.y) * 0.12 - Math.max(0, spin.y) * 0.1
+    ? 1 + Math.max(0, -updatedSpin.y) * 0.22 - Math.max(0, updatedSpin.y) * 0.08
     : 1;
   const frictionForce = FRICTION_DECELERATION * spinDrag * dt;
-  const newSpeed = Math.max(0, speed - frictionForce);
-  const ratio = newSpeed / speed;
+  const newSpeed = Math.max(0, updatedSpeed - frictionForce);
+  const ratio = newSpeed / updatedSpeed;
   ball.vel.x *= ratio;
   ball.vel.y *= ratio;
 
   if (ball.color === 'white') {
-    setSpin(ball, spin.x * Math.exp(-1.05 * dt), spin.y * Math.exp(-0.42 * dt));
+    const spinYDecay = updatedSpin.y < 0 ? 0.32 : 0.44;
+    setSpin(ball, updatedSpin.x * Math.exp(-0.82 * dt), updatedSpin.y * Math.exp(-spinYDecay * dt));
   }
 }
 
@@ -273,13 +328,18 @@ export function applyShot(
   const cueBall = balls.find(b => b.color === 'white' && !b.pocketed);
   if (!cueBall) return;
 
-  const speed = power * MAX_CUE_SPEED;
+  const clampedPower = clamp(power, 0, MAX_SHOT_POWER);
+  const speed = clampedPower * MAX_CUE_SPEED;
   cueBall.vel = vec2(
     Math.cos(angle) * speed,
     Math.sin(angle) * speed,
   );
 
-  setSpin(cueBall, spinX, spinY);
+  setSpin(
+    cueBall,
+    spinX * (0.82 + clampedPower * 0.18),
+    spinY * (0.9 + clampedPower * 0.16),
+  );
 }
 
 /** Physics simulation result */
@@ -397,7 +457,7 @@ export function simulateShot(balls: Ball[], options?: { generateFrames?: boolean
 
     for (const ball of simBalls) {
       if (ball.pocketed) continue;
-      applyFriction(ball, dt);
+      applyRollingPhysics(ball, dt);
     }
 
     tickCount++;

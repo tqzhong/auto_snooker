@@ -7,7 +7,7 @@ import { MasterSnookerAgent } from '../src/ai/agents/master-agent';
 import { createTrainer, formatTrainingResults } from '../src/training/trainer';
 import { createRoundRobinPairs, createSelfPlayPairs } from '../src/training/matcher';
 import { optimizeMasterParams } from '../src/training/master-optimizer';
-import { writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 
 const AGENTS: Record<string, () => any> = {
   master: () => new MasterSnookerAgent('Master'),
@@ -27,6 +27,9 @@ async function main() {
   let generations = 5;
   let populationSize = 4;
   let maxShots = 420;
+  let curriculumVisits = 4;
+  let maxCurriculumShots = 18;
+  let resumeFrom = '';
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -54,6 +57,15 @@ async function main() {
       case '--max-shots':
         maxShots = parseInt(args[++i], 10);
         break;
+      case '--curriculum-visits':
+        curriculumVisits = parseInt(args[++i], 10);
+        break;
+      case '--max-curriculum-shots':
+        maxCurriculumShots = parseInt(args[++i], 10);
+        break;
+      case '--resume-from':
+        resumeFrom = args[++i];
+        break;
       case '--help':
         console.log(`
 Auto Snooker Training CLI
@@ -70,6 +82,9 @@ Options:
   --generations <n>   Generations for --optimize-master (default: 5)
   --population <n>    Candidates per generation for optimization (default: 4)
   --max-shots <n>     Max shots per optimization frame (default: 420)
+  --curriculum-visits <n>  Break-building practice visits per eval (default: 4)
+  --max-curriculum-shots <n> Max shots per practice visit (default: 18)
+  --resume-from <file> Continue optimization from a previous result JSON
   --help              Show this help
 `);
         process.exit(0);
@@ -80,13 +95,28 @@ Options:
     console.log(`🎱 Auto Snooker Master Optimization`);
     console.log(`   Generations: ${generations}`);
     console.log(`   Frames per eval: ${frames}`);
+    console.log(`   Curriculum visits per eval: ${curriculumVisits}`);
+    if (resumeFrom) console.log(`   Resume from: ${resumeFrom}`);
     console.log('');
+
+    let initialParams = {};
+    if (resumeFrom) {
+      if (!existsSync(resumeFrom)) {
+        console.error(`Resume file not found: ${resumeFrom}`);
+        process.exit(1);
+      }
+      const previous = JSON.parse(readFileSync(resumeFrom, 'utf8'));
+      initialParams = previous.bestParams ?? {};
+    }
 
     const result = await optimizeMasterParams({
       generations,
       framesPerEval: frames,
       populationSize,
       maxShotsPerFrame: maxShots,
+      curriculumVisits,
+      maxCurriculumShots,
+      initialParams,
       onProgress: (generation, bestFitness, bestParams) => {
         process.stdout.write(`\r   Generation ${generation + 1}/${generations} best fitness ${bestFitness.toFixed(1)}`);
       },
@@ -96,6 +126,9 @@ Options:
     console.log(`   Best fitness: ${result.bestFitness.toFixed(1)}`);
     console.log(`   Highest break: ${result.bestStats.highestBreak}`);
     console.log(`   Century breaks: ${result.bestStats.centuryBreaks}`);
+    console.log(`   Red-black pairs: ${result.bestBreakStats.redBlackPairs}`);
+    console.log(`   Black after red: ${(result.bestBreakStats.blackAfterRedRate * 100).toFixed(1)}%`);
+    console.log(`   Premium color after red: ${(result.bestBreakStats.premiumColorAfterRedRate * 100).toFixed(1)}%`);
     console.log(`   Pot success: ${(result.bestStats.potSuccessRate * 100).toFixed(1)}%`);
     console.log(`   Foul rate: ${(result.bestStats.foulRate * 100).toFixed(1)}%`);
 

@@ -105,11 +105,12 @@ export const POCKET_RADII: number[] = [
 ];
 
 /** Physics constants */
-export const FRICTION_DECELERATION = 450; // mm/s^2
+export const FRICTION_DECELERATION = 560; // mm/s^2
 export const CUSHION_RESTITUTION = 0.75;
 export const BALL_RESTITUTION = 0.95;
 export const SPIN_FRICTION_FACTOR = 0.3;
-export const MAX_CUE_SPEED = 5000; // mm/s
+export const MAX_CUE_SPEED = 6400; // mm/s
+export const MAX_SHOT_POWER = 1.25;
 export const POCKET_PULL_RADIUS_FACTOR = 1.6;
 
 /** Simulation */

@@ -2,16 +2,17 @@
 // Positional Play — Break Building & Snooker Placement
 // ============================================================
 
-import type { Ball, BallColor, GameState, Vec2 } from '../types';
+import type { Ball, BallColor, GameState, ShotParams, Vec2 } from '../types';
 import { BALL_VALUES, COLORS_ORDER } from '../types';
 import {
   BALL_RADIUS, TABLE_LENGTH, TABLE_WIDTH, CENTER_Y,
   POCKET_POSITIONS, BAULK_LINE_X,
 } from '../engine/constants';
 import { distanceBetween, angleBetween, applyShot, simulateShot } from '../engine/physics';
+import { applyShotResult, evaluateShot } from '../engine/rules';
 import {
   getLegalTargetBalls, calculateBestShot, calculatePotAngle, findContactAngle,
-  getPotLineCount, nearestPocket, calculateGhostBallPosition,
+  getPotLineCount, nearestPocket, calculateGhostBallPosition, potCutAngleDegrees,
   isPotLineAvailable, shotHitsTargetFirst, distanceToPower, findAnyLegalContactShot,
   countEscapeAngles,
 } from './strategy';
@@ -290,6 +291,9 @@ export interface MasterSelectionOptions {
   rng?: () => number;
   macroAdvice?: MacroStrategyAdvice | null;
   scoring?: Partial<MasterScoringParams>;
+  searchDepth?: number;
+  beamWidth?: number;
+  branchWidth?: number;
 }
 
 export interface MacroStrategyAdvice {
@@ -423,6 +427,7 @@ function maxLikelyPointsRemaining(balls: Ball[]): number {
 }
 
 function shouldPreferSafety(state: GameState): boolean {
+  if (state.phase === 'colors_phase') return false;
   const diff = scoreDiff(state);
   const remaining = maxLikelyPointsRemaining(state.balls);
   return diff > Math.max(20, remaining * 0.35);
@@ -503,12 +508,46 @@ function spinComplexityPenalty(spinX: number, spinY: number): number {
 }
 
 function distanceComfortScore(distance: number): number {
-  if (distance < BALL_RADIUS * 3) return -260;
-  if (distance < 180) return -90;
-  if (distance <= 760) return 190;
-  if (distance <= 1050) return 110;
-  if (distance <= 1400) return 20;
-  return -Math.min(260, (distance - 1400) * 0.22);
+  if (distance < BALL_RADIUS * 3.2) return -420;
+  if (distance < 190) return -180;
+  if (distance <= 620) return 230;
+  if (distance <= 920) return 160;
+  if (distance <= 1220) return 35;
+  return -Math.min(340, (distance - 1220) * 0.3);
+}
+
+function cueComfortPenalty(cueBallPos: Vec2, nextTargets: Ball[], allBalls: Ball[]): number {
+  const cushion = distanceToNearestCushion(cueBallPos);
+  let penalty = 0;
+  penalty += Math.max(0, 155 - cushion) * 1.8;
+  penalty += cushion < 70 ? 260 : 0;
+
+  const cueProxy: Ball = {
+    id: -100,
+    color: 'white',
+    pos: cueBallPos,
+    vel: { x: 0, y: 0 },
+    radius: BALL_RADIUS,
+    pocketed: false,
+    active: true,
+  };
+
+  let bestCut = Infinity;
+  let easyLine = false;
+  for (const target of nextTargets) {
+    for (const [x, y] of POCKET_POSITIONS) {
+      const pocket = { x, y };
+      if (!isPotLineAvailable(cueProxy, target, pocket, allBalls)) continue;
+      const cut = potCutAngleDegrees(cueProxy, target, pocket);
+      bestCut = Math.min(bestCut, cut);
+      if (cut <= 28) easyLine = true;
+    }
+  }
+
+  if (!Number.isFinite(bestCut)) return penalty + 520;
+  penalty += Math.max(0, bestCut - 34) * 9;
+  if (!easyLine) penalty += 160;
+  return penalty;
 }
 
 function highBreakColorPriority(color: BallColor): number {
@@ -544,13 +583,13 @@ function scoreNextCueShape(
     const value = BALL_VALUES[next.color as BallColor] ?? 1;
     const colorPriority = highBreakColorPriority(next.color as BallColor);
     const pocketDist = nearestPocket(next).dist;
-    const lineScore = potLines > 0 ? potLines * 190 : -180;
+    const lineScore = potLines > 0 ? potLines * 190 : -260;
     const score = lineScore +
       distanceComfortScore(dist) +
       value * 30 +
       colorPriority * 42 * params.blackPinkBias -
       (next.color === 'black' || next.color === 'pink' ? Math.max(0, dist - 900) * 0.09 : 0) -
-      Math.max(0, 120 - distanceToNearestCushion(cueBallPos)) * 0.35 -
+      Math.max(0, 170 - distanceToNearestCushion(cueBallPos)) * 0.85 -
       Math.max(0, pocketDist - 900) * 0.035;
 
     if (score > bestScore) {
@@ -661,7 +700,8 @@ function makeAttackCandidate(
   const value = BALL_VALUES[target.color as BallColor];
   const cueToTarget = distanceBetween(startCueBall.pos, target.pos);
   const targetPocketDist = nearestPocket(target).dist;
-  const cushionPenalty = Math.max(0, 130 - distanceToNearestCushion(cueBall.pos)) * 0.45;
+  const cushionPenalty = Math.max(0, 180 - distanceToNearestCushion(cueBall.pos)) * 1.25 +
+    cueComfortPenalty(cueBall.pos, nextTargets, sim.finalBalls);
   const overrunPenalty = cueTravelPenalty(startCueBall.pos, cueBall.pos, shape.hasShape);
   const difficulty = shotDifficulty(
     state, target, pocket.pos, candidate.angle, candidate.power, candidate.spinX, candidate.spinY,
@@ -742,11 +782,13 @@ export function collectControlledAttacks(
       const angle = calculatePotAngle(cueBall, target, pocket.pos);
       const basePower = distanceToPower(distanceBetween(cueBall.pos, target.pos) + pocket.dist * 0.35);
       const powers = uniqueNumbers([
-        clamp(basePower * 0.78, 0.16, 0.95),
-        clamp(basePower, 0.18, 0.95),
-        clamp(basePower * 1.15, 0.18, 0.95),
+        clamp(basePower * 0.72, 0.16, 1.16),
+        clamp(basePower, 0.18, 1.16),
+        clamp(basePower * 1.22, 0.18, 1.16),
         0.32,
         0.5,
+        0.82,
+        1.08,
       ]);
       const spinOptions = item.potLines >= 2
         ? ATTACK_SPINS.slice(0, 12)
@@ -855,10 +897,11 @@ export function collectTacticalSafeties(
 
     const basePower = distanceToPower(item.cueDist);
     const powers = uniqueNumbers([
-      clamp(basePower * 0.65, 0.18, 0.75),
+      clamp(basePower * 0.65, 0.18, 0.88),
       0.26,
       0.4,
       0.62,
+      0.82,
     ]);
     const spinOptions = SAFETY_SPINS.slice(0, 7);
 
@@ -883,6 +926,195 @@ export function findBestTacticalSafety(
   options: MasterSelectionOptions = {},
 ): MasterPositionalShot | null {
   return collectTacticalSafeties(state, targets, options)[0] ?? null;
+}
+
+interface AttackProjection {
+  state: GameState;
+  points: number;
+  potted: Ball[];
+}
+
+function projectAttackState(state: GameState, shot: MasterPositionalShot): AttackProjection | null {
+  if (shot.strategy !== 'attack') return null;
+
+  const balls = cloneBalls(state.balls);
+  applyShot(balls, shot.angle, shot.power, shot.spinX, shot.spinY);
+  const sim = simulateShot(balls, { generateFrames: false });
+  const shotParams: ShotParams = {
+    angle: shot.angle,
+    power: shot.power,
+    spinX: shot.spinX,
+    spinY: shot.spinY,
+    targetBallId: shot.targetBallId,
+  };
+  const result = evaluateShot(state, shotParams, sim);
+  if (result.fouls.length > 0 || result.pointsScored <= 0) return null;
+
+  const nextState = applyShotResult(state, shotParams, sim, result, 'search projection');
+  if (nextState.currentPlayerIndex !== state.currentPlayerIndex || nextState.phase === 'game_over') {
+    return null;
+  }
+
+  return { state: nextState, points: result.pointsScored, potted: result.pottedBalls };
+}
+
+function bestColorAvailableFromCue(cueBallPos: Vec2, balls: Ball[], color: BallColor): {
+  lines: number;
+  bestDistance: number;
+} {
+  const targets = balls.filter(b => b.color === color && !b.pocketed);
+  let lines = 0;
+  let bestDistance = Infinity;
+
+  for (const target of targets) {
+    lines += countPotLinesFromPos(cueBallPos, target, balls);
+    bestDistance = Math.min(bestDistance, distanceBetween(cueBallPos, target.pos));
+  }
+
+  return { lines, bestDistance };
+}
+
+function countRedsPotted(potted: Ball[]): number {
+  return potted.filter(b => b.color === 'red').length;
+}
+
+function break147IntentScore(
+  state: GameState,
+  shot: MasterPositionalShot,
+  projection: AttackProjection | null,
+): number {
+  if (!projection) return -1200;
+
+  const cueBall = projection.state.balls.find(b => b.color === 'white' && !b.pocketed);
+  if (!cueBall) return -1200;
+
+  const target = state.balls.find(b => b.id === shot.targetBallId);
+  if (!target) return 0;
+
+  let score = 0;
+  const redsRemainingBefore = state.balls.filter(b => b.color === 'red' && !b.pocketed).length;
+  const redsPotted = countRedsPotted(projection.potted);
+
+  if (state.phase === 'break_off' || state.phase === 'reds_phase') {
+    if (target.color === 'red') {
+      score += 210;
+      score += redsPotted === 1 ? 180 : -650 * Math.max(0, redsPotted - 1);
+
+      const blackShape = bestColorAvailableFromCue(cueBall.pos, projection.state.balls, 'black');
+      const pinkShape = bestColorAvailableFromCue(cueBall.pos, projection.state.balls, 'pink');
+      const blueShape = bestColorAvailableFromCue(cueBall.pos, projection.state.balls, 'blue');
+      score += blackShape.lines > 0 ? 740 : -280;
+      score += blackShape.bestDistance < 820 ? 260 : blackShape.bestDistance < 1150 ? 90 : -140;
+      score += pinkShape.lines > 0 ? 180 : 0;
+      score += blueShape.lines > 0 ? 65 : 0;
+    }
+  } else if (state.phase === 'color_after_red') {
+    const color = target.color as BallColor;
+    if (color === 'black') score += 960;
+    else if (color === 'pink') score += 320;
+    else if (color === 'blue') score += 80;
+    else score -= 220;
+
+    const redShape = bestColorAvailableFromCue(cueBall.pos, projection.state.balls, 'red');
+    score += redShape.lines > 0 ? 560 : -360;
+    score += redShape.bestDistance < 740 ? 220 : redShape.bestDistance < 1100 ? 60 : -160;
+  } else if (state.phase === 'colors_phase') {
+    score += projection.points * 95;
+  }
+
+  const cushionDistance = distanceToNearestCushion(cueBall.pos);
+  score -= Math.max(0, 105 - cushionDistance) * 2.4;
+  score -= shot.power > 0.64 ? (shot.power - 0.64) * 360 : 0;
+  score -= Math.max(0, Math.abs(shot.spinX) - 0.42) * 150;
+
+  // A maximum break requires exactly fifteen red-colour pairs before the final colours.
+  // Losing reds cheaply reduces the ceiling, so preserve the 147 route while reds remain.
+  if (redsRemainingBefore > 0 && redsPotted > 1) {
+    score -= (redsPotted - 1) * 900;
+  }
+
+  return score;
+}
+
+function terminalBreakValue(state: GameState): number {
+  const current = state.players[state.currentPlayerIndex];
+  const redsRemaining = state.balls.filter(b => b.color === 'red' && !b.pocketed).length;
+  const cueBall = state.balls.find(b => b.color === 'white' && !b.pocketed);
+  if (!cueBall) return -1000;
+
+  let score = current.currentBreak * 18;
+  if (redsRemaining > 0) {
+    const blackShape = bestColorAvailableFromCue(cueBall.pos, state.balls, 'black');
+    const redShape = bestColorAvailableFromCue(cueBall.pos, state.balls, 'red');
+    score += blackShape.lines * 260 + redShape.lines * 120;
+    score -= blackShape.lines === 0 && state.phase === 'color_after_red' ? 320 : 0;
+    score -= redShape.lines === 0 && state.phase !== 'color_after_red' ? 220 : 0;
+  }
+  return score;
+}
+
+function searchBreakValue(
+  state: GameState,
+  depth: number,
+  options: MasterSelectionOptions,
+): number {
+  if (depth <= 0 || state.phase === 'game_over') return terminalBreakValue(state);
+
+  const attacks = collectControlledAttacks(state, getLegalTargetBalls(state), {
+    ...options,
+    creativity: 0,
+  }).slice(0, Math.max(1, options.branchWidth ?? 4));
+
+  if (attacks.length === 0) return terminalBreakValue(state) - 420;
+
+  let best = -Infinity;
+  for (const attack of attacks) {
+    const projection = projectAttackState(state, attack);
+    const intent = break147IntentScore(state, attack, projection);
+    if (!projection) {
+      best = Math.max(best, attack.score + intent);
+      continue;
+    }
+
+    const future = searchBreakValue(projection.state, depth - 1, options);
+    const total = attack.score * 0.35 +
+      projection.points * 145 +
+      intent +
+      future * 0.72;
+    if (total > best) best = total;
+  }
+
+  return best;
+}
+
+function applyBreakSearchScores(
+  state: GameState,
+  attacks: MasterPositionalShot[],
+  options: MasterSelectionOptions = {},
+): MasterPositionalShot[] {
+  const depth = clamp(options.searchDepth ?? 2, 0, 6);
+  if (depth <= 1 || attacks.length === 0) return attacks;
+
+  const beamWidth = Math.max(1, Math.floor(options.beamWidth ?? 3));
+  const branchWidth = Math.max(1, Math.floor(options.branchWidth ?? 3));
+
+  return attacks
+    .slice(0, beamWidth)
+    .map(attack => {
+      const projection = projectAttackState(state, attack);
+      const intent = break147IntentScore(state, attack, projection);
+      const future = projection
+        ? searchBreakValue(projection.state, depth - 1, { ...options, branchWidth })
+        : -1000;
+      const searchBonus = intent + future * 0.58;
+      return {
+        ...attack,
+        score: attack.score + searchBonus,
+        reasoning: `${attack.reasoning}；147搜索 depth=${depth} bonus=${searchBonus.toFixed(0)}`,
+      };
+    })
+    .sort((a, b) => b.score - a.score)
+    .concat(attacks.slice(beamWidth));
 }
 
 function chooseWeightedCandidate(
@@ -928,10 +1160,14 @@ export function selectMasterPositionalShot(
   const targets = getLegalTargetBalls(state);
   if (targets.length === 0) return null;
 
-  const attacks = collectControlledAttacks(state, targets, options);
+  const baseAttacks = collectControlledAttacks(state, targets, options);
+  const attacks = applyBreakSearchScores(state, baseAttacks, options);
   const attack = attacks[0] ?? null;
   const safetyPreferred = shouldPreferSafety(state);
 
+  if (state.phase === 'colors_phase' && attack) {
+    return chooseWeightedCandidate(attacks, { ...options, creativity: 0 });
+  }
   if (attack && shouldForceAttack(state)) return chooseWeightedCandidate(attacks, options);
   if (attack && !safetyPreferred && attack.score > 850) {
     return chooseWeightedCandidate(attacks, options);
